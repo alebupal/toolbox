@@ -223,6 +223,70 @@ class CoreTests(unittest.TestCase):
             srv.close()
             t.join(timeout=1)
 
+    def test_cli_shares_web_queue_and_shell_wrappers(self) -> None:
+        import io
+        import subprocess
+        from contextlib import redirect_stdout
+        from unittest import mock
+        from app.cli import ToolboxClient, run_cli
+
+        src_dir = os.path.join(self.data_root, "juegos")
+        dst_dir = os.path.join(self.data_root, "destino_cli")
+        os.makedirs(src_dir, exist_ok=True)
+        os.makedirs(dst_dir, exist_ok=True)
+        video = os.path.join(self.data_root, "peli.mkv")
+        nsp = os.path.join(src_dir, "Zelda [0100F2C0115B6000][v0].nsp")
+        txt = os.path.join(src_dir, "leeme.txt")
+        Path(video).write_bytes(b"video123")
+        Path(nsp).write_bytes(b"nspdata")
+        Path(txt).write_bytes(b"notas")
+
+        client = ToolboxClient(base_url="http://127.0.0.1:9")
+        client._web_ok = False  # Forzar modo DB compartida sin depender de uvicorn
+
+        with mock.patch.dict(os.environ, {"CONFIG_DIR": self.cfg_dir, "DATA_ROOT": self.data_root}), mock.patch(
+            "sys.stdin.isatty", return_value=False
+        ):
+            rc_mover = run_cli(["mover", "-m", "-d", dst_dir, video], client=client)
+            self.assertEqual(rc_mover, 0)
+
+            rc_ftp = run_cli(["ftp", "-j", "-d", "/install", src_dir], client=client)
+            self.assertEqual(rc_ftp, 0)
+
+            db = QueueDB(os.path.join(self.cfg_dir, "queue.db"))
+            mover_items = db.list_items("mover")
+            ftp_items = db.list_items("ftp")
+            db.close()
+
+            self.assertEqual(len(mover_items), 1)
+            self.assertEqual(mover_items[0]["operation"], "mover")
+            self.assertEqual(mover_items[0]["dest_path"], os.path.join(dst_dir, "peli.mkv"))
+
+            # Con -j/--solo-switch solo debe haberse encolado el .nsp y no leeme.txt
+            self.assertEqual(len(ftp_items), 1)
+            self.assertEqual(ftp_items[0]["source_path"], nsp)
+            self.assertTrue(ftp_items[0]["dest_path"].startswith("/install/juegos/"))
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc_st = run_cli(["mover", "--estado"], client=client)
+            self.assertEqual(rc_st, 0)
+            self.assertIn("peli.mkv", buf.getvalue())
+
+        # Verificar que scripts/mover.sh y scripts/subeftp.sh delegan en app.cli con TOOLBOX_UNIFIED=1
+        repo_root = str(Path(__file__).resolve().parent.parent)
+        env = dict(os.environ, TOOLBOX_UNIFIED="1", PORT="9", CONFIG_DIR=self.cfg_dir, DATA_ROOT=self.data_root)
+        proc = subprocess.run(
+            [os.path.join(repo_root, "scripts", "mover.sh"), "--estado"],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("Cola compartida Web + SSH", proc.stdout)
+        self.assertIn("peli.mkv", proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

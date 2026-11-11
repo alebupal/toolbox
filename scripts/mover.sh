@@ -23,6 +23,32 @@
 set -uo pipefail
 
 SCRIPT="$(readlink -f "$0")"
+ROOT_DIR="$(dirname "$(dirname "$SCRIPT")")"
+
+# En el contenedor Toolbox (o con TOOLBOX_UNIFIED=1) compartir cola SQLite/API con la Web,
+# salvo que se pase --legacy para usar el modo Bash clásico con cola.txt.
+_use_legacy=0
+_filtered_args=()
+for _a in "$@"; do
+    if [[ $_a == "--legacy" ]]; then
+        _use_legacy=1
+    else
+        _filtered_args+=("$_a")
+    fi
+done
+
+if ((!_use_legacy)) && [[ ${1:-} != "--worker" ]] && [[ -f "$ROOT_DIR/app/cli.py" ]] && command -v python3 > /dev/null 2>&1; then
+    if [[ ${TOOLBOX_UNIFIED:-} == "1" ]] || [[ -d /config && $SCRIPT == /app/* ]]; then
+        export PYTHONPATH="$ROOT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+        exec python3 -m app.cli mover "${_filtered_args[@]}"
+    fi
+fi
+if ((${#_filtered_args[@]})); then
+    set -- "${_filtered_args[@]}"
+else
+    set --
+fi
+
 BASE="${MOVER_DATA_DIR:-$(dirname "$SCRIPT")}"
 mkdir -p "$BASE"
 CONF="$BASE/mover.conf"

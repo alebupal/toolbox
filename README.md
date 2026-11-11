@@ -170,11 +170,10 @@ En la parte superior aparecen siempre las dos tarjetas de estado (**💾 Cola Mo
 
 Todos los scripts están instalados dentro del contenedor como comandos globales (`toolbox`, `mover`, `subeftp`) y también se encuentran en `scripts/` para ejecutarlos directamente en Linux fuera de Docker.
 
-> **Importante sobre rutas y persistencia:**
-> - **Dentro de Docker (`docker exec -it toolbox ...`)**: el disco del servidor está montado en `/host`, así que debes pasar rutas `/host/...` (ej. `/host/mnt/peliculas`). La configuración y colas CLI se guardan en `/config/cli/mover/` y `/config/cli/ftp/`.
-> - **Controlar la Web vs usar la cola CLI**:
->   - `toolbox web ...` consulta y controla la **misma base de datos SQLite de la Web** (`/config/queue.db`). Úsalo si lanzaste algo desde el navegador y quieres seguirlo o pararlo por SSH.
->   - `toolbox mover ...` y `toolbox ftp ...` operan los **scripts Bash clásicos** (`mover.sh` / `subeftp.sh` con sus archivos en `/config/cli/...`).
+> **Colas y configuración compartidas Web ⇄ SSH:**
+> - **Dentro del contenedor Docker (`docker exec -it toolbox ...`)**: `toolbox`, `mover` y `subeftp` se conectan automáticamente al mismo motor Web (`/config/queue.db` + `/config/settings.json`). Todo lo que añadas, inicies, pauses, reordenes o configures por **SSH** aparece al instante en la **Web** y viceversa.
+> - **Rutas en Docker**: el disco del servidor está montado en `/host`, así que debes pasar rutas `/host/...` (ej. `/host/mnt/peliculas`).
+> - **Modo clásico aislado (`--legacy` o fuera de Docker)**: si ejecutas `./scripts/mover.sh` o `./scripts/subeftp.sh` en otro servidor Linux sin contenedor, o si pasas el flag `--legacy` dentro del contenedor, usan sus ficheros independientes clásicos (`cola.txt` en `/config/cli/...`).
 
 ---
 
@@ -414,10 +413,10 @@ Todo el estado persistente del contenedor vive en `/config` (mapeado a `./config
 
 | Ruta dentro de `/config` | Contenido |
 |---|---|
-| `/config/settings.json` | Configuración de la interfaz web (permisos `600`, incluye contraseña FTP). |
-| `/config/queue.db` | Base de datos SQLite con las colas web y los registros de actividad. |
-| `/config/cli/mover/` | Configuración (`mover.conf`), cola (`cola.txt`) y logs (`mover.log`) de `mover.sh` por CLI. |
-| `/config/cli/ftp/` | Configuración (`subeftp.conf`), cola (`cola.txt`) y logs (`subeftp.log`) de `subeftp.sh` por CLI. |
+| `/config/settings.json` | Configuración unificada Web + SSH (permisos `600`, incluye contraseña FTP). |
+| `/config/queue.db` | Base de datos SQLite compartida (Web + SSH) con las colas y los registros de actividad. |
+| `/config/cli/mover/` | Solo utilizado si ejecutas `mover --legacy` o fuera de Docker. |
+| `/config/cli/ftp/` | Solo utilizado si ejecutas `subeftp --legacy` o fuera de Docker. |
 
 ---
 

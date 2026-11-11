@@ -173,6 +173,13 @@ mostrar_readme() {
 }
 
 mostrar_estado_global() {
+    if [[ ${TOOLBOX_UNIFIED:-} == "1" ]] || [[ -d /config && $SCRIPTS_DIR == /app/* ]]; then
+        PYTHONPATH="$ROOT_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 -m app.cli mover --estado 2>/dev/null || true
+        echo
+        PYTHONPATH="$ROOT_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 -m app.cli ftp --estado 2>/dev/null || true
+        echo
+        return 0
+    fi
     printf '%s=== Estado CLI: Mover / Copiar ===%s\n' "$C_BOLD$C_CYAN" "$C_RESET"
     "$MOVER_SH" --estado || true
     echo
