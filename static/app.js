@@ -1,13 +1,23 @@
 const state = {
   activeTab: "explore",
   exploreMode: "mover", // 'mover' | 'ftp'
+  moverOp: "copiar", // 'copiar' | 'mover'
+  useAutoDest: false,
   queueTab: "mover",
-  currentPath: "",
-  parentPath: null,
+
+  srcPath: "",
+  srcParent: null,
+  srcData: null,
   selectedPaths: new Set(),
-  fsData: null,
+
+  dstLocalPath: "",
+  dstLocalParent: null,
+  dstLocalData: null,
+  dstRemotePath: "/",
+  dstRemoteData: null,
+
   settings: null,
-  picker: { mode: "local", path: "/" },
+  picker: { targetInputId: null, path: "" },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -50,6 +60,45 @@ function escapeHtml(str) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function renderBreadcrumbs(containerEl, path, rootPath, onClickPath) {
+  if (!path) {
+    containerEl.innerHTML = "";
+    return;
+  }
+  const normRoot = rootPath === "/" ? "/" : rootPath.replace(/\/+$/, "");
+  const parts = [];
+  if (normRoot === "/") {
+    parts.push({ label: "/", path: "/" });
+    const rest = path.replace(/^\/+/, "").split("/").filter(Boolean);
+    let acc = "";
+    for (const seg of rest) {
+      acc += `/${seg}`;
+      parts.push({ label: seg, path: acc });
+    }
+  } else {
+    parts.push({ label: normRoot, path: normRoot });
+    const rel = path.startsWith(normRoot) ? path.slice(normRoot.length).replace(/^\/+/, "") : "";
+    let acc = normRoot;
+    for (const seg of rel.split("/").filter(Boolean)) {
+      acc += `/${seg}`;
+      parts.push({ label: seg, path: acc });
+    }
+  }
+
+  containerEl.innerHTML = parts
+    .map((p, idx) => {
+      const isLast = idx === parts.length - 1;
+      const sep = idx > 0 ? `<span class="crumb-sep">›</span>` : "";
+      if (isLast) return `${sep}<span class="crumb current">${escapeHtml(p.label)}</span>`;
+      return `${sep}<button type="button" class="crumb" data-cpath="${escapeHtml(p.path)}">${escapeHtml(p.label)}</button>`;
+    })
+    .join("");
+
+  containerEl.querySelectorAll("button.crumb").forEach((b) => {
+    b.onclick = () => onClickPath(b.dataset.cpath);
+  });
 }
 
 // --- TABS ---
@@ -115,7 +164,7 @@ async function refreshStatus() {
     $("tabQueueBadge").textContent = totalActive;
     if (state.activeTab === "queue") loadQueue();
   } catch {
-    // Silenciar errores transitorios de polling
+    // Silenciar errores transitorios
   }
 }
 
@@ -124,64 +173,102 @@ $("btnStopMover").onclick = async () => { await api("/api/queue/mover/stop", { m
 $("btnStartFtp").onclick = async () => { await api("/api/queue/ftp/start", { method: "POST" }); refreshStatus(); };
 $("btnStopFtp").onclick = async () => { await api("/api/queue/ftp/stop", { method: "POST" }); refreshStatus(); };
 
-// --- EXPLORADOR ---
+// --- MODO EXPLORAR (DOBLE PANEL) ---
+function updateExploreActionLabels() {
+  const isFtp = state.exploreMode === "ftp";
+  $("exploreMoverOpGroup").classList.toggle("hidden", isFtp);
+  $("btnAddSwitchOnly").classList.toggle("hidden", !isFtp);
+  $("dstPaneTitle").textContent = isFtp ? "📡 Destino FTP / Switch" : "🎯 Destino local (Servidor)";
+  $("btnDstNewDir").classList.toggle("hidden", isFtp);
+
+  if (isFtp) {
+    $("btnAddSelected").textContent = "📡 Añadir a cola FTP →";
+    $("btnSendAndStart").textContent = "⚡ Subir ahora";
+  } else if (state.moverOp === "mover") {
+    $("btnAddSelected").textContent = "✂️ Mover seleccionados →";
+    $("btnSendAndStart").textContent = "⚡ Mover ahora";
+  } else {
+    $("btnAddSelected").textContent = "📋 Copiar seleccionados →";
+    $("btnSendAndStart").textContent = "⚡ Copiar ahora";
+  }
+}
+
 function setExploreMode(mode) {
   state.exploreMode = mode;
   $("modeBtnMover").classList.toggle("active", mode === "mover");
   $("modeBtnFtp").classList.toggle("active", mode === "ftp");
-  $("exploreMoverOpts").classList.toggle("hidden", mode !== "mover");
-  $("exploreFtpOpts").classList.toggle("hidden", mode !== "ftp");
-  $("btnAddSwitchOnly").classList.toggle("hidden", mode !== "ftp");
   state.selectedPaths.clear();
-  loadDir("");
+  updateExploreActionLabels();
+  loadSrcDir("");
+  loadDstDir();
+}
+
+function setMoverOp(op) {
+  state.moverOp = op;
+  $("opBtnCopiar").classList.toggle("active", op === "copiar");
+  $("opBtnMover").classList.toggle("active", op === "mover");
+  updateExploreActionLabels();
+  renderSrcTable();
 }
 
 $("modeBtnMover").onclick = () => setExploreMode("mover");
 $("modeBtnFtp").onclick = () => setExploreMode("ftp");
-$("btnResetLocalDest").onclick = () => { $("exploreMoverDest").value = ""; };
-$("btnResetRemoteDest").onclick = () => { $("exploreFtpDest").value = ""; };
+$("opBtnCopiar").onclick = () => setMoverOp("copiar");
+$("opBtnMover").onclick = () => setMoverOp("mover");
 
-async function loadDir(path) {
+$("chkAutoDest").onchange = (e) => {
+  state.useAutoDest = e.target.checked;
+  $("dstAutoNotice").classList.toggle("hidden", !state.useAutoDest);
+  $("dstNavigator").classList.toggle("hidden", state.useAutoDest);
+  if (!state.useAutoDest) loadDstDir();
+};
+
+// --- PANEL IZQUIERDO (ORIGEN) ---
+async function loadSrcDir(path) {
   try {
     const hidden = $("chkShowHidden").checked ? "true" : "false";
     const qs = new URLSearchParams({ kind: state.exploreMode, show_hidden: hidden });
     if (path) qs.set("path", path);
     const data = await api(`/api/fs/list?${qs}`);
-    state.fsData = data;
-    state.currentPath = data.path;
-    state.parentPath = data.parent;
+    state.srcData = data;
+    state.srcPath = data.path;
+    state.srcParent = data.parent;
     state.selectedPaths.clear();
-    $("currentPathInput").value = data.path;
-    $("btnDirUp").disabled = !data.parent;
-    $("fsDiskInfo").textContent = data.disk ? `Libre: ${fmtBytes(data.disk.free_bytes)}` : "";
-    renderBookmarks(data.bookmarks || []);
-    renderFsTable();
+    $("srcPathInput").value = data.path;
+    $("btnSrcUp").disabled = !data.parent;
+    $("srcDiskInfo").textContent = data.disk ? `Libre: ${fmtBytes(data.disk.free_bytes)}` : "";
+    renderBookmarksBar($("srcBookmarks"), data.bookmarks || [], false, (p) => loadSrcDir(p));
+    renderBreadcrumbs($("srcBreadcrumbs"), data.path, data.data_root, (p) => loadSrcDir(p));
+    renderSrcTable();
   } catch (err) {
     showToast(err.message);
   }
 }
 
-function renderBookmarks(bookmarks) {
-  const bar = $("bookmarksBar");
-  const favs = (state.settings && state.settings.mover_favorites) || [];
+function renderBookmarksBar(el, bookmarks, includeFavs, onClick) {
+  const favs = includeFavs ? ((state.settings && state.settings.mover_favorites) || []) : [];
   const all = [
     ...bookmarks,
-    ...(state.exploreMode === "mover" ? favs.map((p) => ({ label: `★ ${p.split("/").pop() || p}`, path: p })) : []),
+    ...favs.map((p) => ({ label: `★ ${p.split("/").pop() || p}`, path: p })),
   ];
-  bar.innerHTML = all
-    .map((b) => `<button class="btn btn-sm btn-ghost" data-bpath="${escapeHtml(b.path)}">${escapeHtml(b.label)}</button>`)
+  el.innerHTML = all
+    .map((b) => `<button type="button" class="btn btn-sm btn-ghost" data-bpath="${escapeHtml(b.path)}">${escapeHtml(b.label)}</button>`)
     .join("");
-  bar.querySelectorAll("button").forEach((btn) => {
-    btn.onclick = () => loadDir(btn.dataset.bpath);
+  el.querySelectorAll("button").forEach((btn) => {
+    btn.onclick = () => onClick(btn.dataset.bpath);
   });
 }
 
-function renderFsTable() {
-  const data = state.fsData;
+function renderSrcTable() {
+  const data = state.srcData;
   if (!data) return;
   const filter = $("fsFilter").value.trim().toLowerCase();
   const dirs = data.dirs.filter((d) => !filter || d.name.toLowerCase().includes(filter));
   const files = data.files.filter((f) => !filter || f.name.toLowerCase().includes(filter));
+
+  const actionLabel = state.exploreMode === "ftp"
+    ? "Subir →"
+    : (state.moverOp === "mover" ? "Mover →" : "Copiar →");
 
   const rows = [];
   for (const d of dirs) {
@@ -192,7 +279,7 @@ function renderFsTable() {
         <td><a class="dir-link" data-open="${escapeHtml(d.path)}">📁 ${escapeHtml(d.name)}</a></td>
         <td><span class="tag">DIR</span></td>
         <td>-</td>
-        <td><button class="btn btn-sm" data-add-dir="${escapeHtml(d.path)}">+ Recursivo</button></td>
+        <td><button type="button" class="btn btn-sm" data-add-dir="${escapeHtml(d.path)}">+ Carpeta</button></td>
       </tr>
     `);
   }
@@ -203,10 +290,10 @@ function renderFsTable() {
     rows.push(`
       <tr>
         <td><input type="checkbox" class="fs-chk" data-path="${escapeHtml(f.path)}" ${checked}></td>
-        <td>${escapeHtml(f.name)}</td>
+        <td class="file-name">${escapeHtml(f.name)}</td>
         <td>${swBadge}${stBadge}</td>
         <td>${fmtBytes(f.size_bytes)}</td>
-        <td><button class="btn btn-sm btn-primary" data-add-file="${escapeHtml(f.path)}">+ Añadir</button></td>
+        <td><button type="button" class="btn btn-sm btn-primary" data-add-file="${escapeHtml(f.path)}">${actionLabel}</button></td>
       </tr>
     `);
   }
@@ -218,18 +305,16 @@ function renderFsTable() {
 }
 
 function updateSelectionSummary() {
-  $("selectionSummary").textContent = `${state.selectedPaths.size} elemento(s) seleccionado(s)`;
+  $("selectionSummary").textContent = `${state.selectedPaths.size} seleccionado(s)`;
 }
 
-$("fsTableBody").addEventListener("click", async (e) => {
+$("fsTableBody").addEventListener("click", (e) => {
   const openEl = e.target.closest("[data-open]");
-  if (openEl) return loadDir(openEl.dataset.open);
-
+  if (openEl) return loadSrcDir(openEl.dataset.open);
   const addFileEl = e.target.closest("[data-add-file]");
-  if (addFileEl) return enqueuePaths([addFileEl.dataset.addFile], false, false);
-
+  if (addFileEl) return enqueuePaths([addFileEl.dataset.addFile], false, false, false);
   const addDirEl = e.target.closest("[data-add-dir]");
-  if (addDirEl) return enqueuePaths([addDirEl.dataset.addDir], true, false);
+  if (addDirEl) return enqueuePaths([addDirEl.dataset.addDir], true, false, false);
 });
 
 $("fsTableBody").addEventListener("change", (e) => {
@@ -258,51 +343,172 @@ $("btnSelectNone").onclick = () => {
   $("chkHeaderAll").dispatchEvent(new Event("change"));
 };
 
-$("btnDirUp").onclick = () => { if (state.parentPath) loadDir(state.parentPath); };
-$("btnGoPath").onclick = () => loadDir($("currentPathInput").value);
-$("currentPathInput").addEventListener("keydown", (e) => { if (e.key === "Enter") loadDir($("currentPathInput").value); });
-$("fsFilter").addEventListener("input", renderFsTable);
-$("chkShowHidden").onchange = () => loadDir(state.currentPath);
+$("btnSrcUp").onclick = () => { if (state.srcParent) loadSrcDir(state.srcParent); };
+$("btnSrcGo").onclick = () => loadSrcDir($("srcPathInput").value);
+$("srcPathInput").addEventListener("keydown", (e) => { if (e.key === "Enter") loadSrcDir($("srcPathInput").value); });
+$("fsFilter").addEventListener("input", renderSrcTable);
+$("chkShowHidden").onchange = () => loadSrcDir(state.srcPath);
 
-$("btnNewDir").onclick = async () => {
-  const name = prompt("Nombre de la nueva carpeta:");
+$("btnSrcNewDir").onclick = async () => {
+  const name = prompt("Nombre de la nueva carpeta en origen:");
   if (!name) return;
   try {
-    await api("/api/fs/mkdir", { method: "POST", body: JSON.stringify({ parent: state.currentPath, name }) });
-    showToast("Carpeta creada");
-    loadDir(state.currentPath);
+    await api("/api/fs/mkdir", { method: "POST", body: JSON.stringify({ parent: state.srcPath, name }) });
+    showToast("Carpeta creada en origen");
+    loadSrcDir(state.srcPath);
   } catch (err) {
     showToast(err.message);
   }
 };
 
-async function enqueuePaths(paths, recursive, onlySwitch) {
+// --- PANEL DERECHO (DESTINO) ---
+async function loadDstDir(pathOverride) {
+  if (state.useAutoDest) return;
+  if (state.exploreMode === "mover") {
+    const target = pathOverride !== undefined ? pathOverride : (state.dstLocalPath || (state.settings && state.settings.mover_dest) || "");
+    try {
+      const qs = new URLSearchParams({ kind: "mover", show_hidden: "false" });
+      if (target) qs.set("path", target);
+      const data = await api(`/api/fs/list?${qs}`);
+      state.dstLocalData = data;
+      state.dstLocalPath = data.path;
+      state.dstLocalParent = data.parent;
+      $("dstPathInput").value = data.path;
+      $("dstActiveLabel").textContent = data.path;
+      $("btnDstUp").disabled = !data.parent;
+      $("dstDiskInfo").textContent = data.disk ? `Libre: ${fmtBytes(data.disk.free_bytes)}` : "";
+      renderBookmarksBar($("dstBookmarks"), data.bookmarks || [], true, (p) => loadDstDir(p));
+      renderBreadcrumbs($("dstBreadcrumbs"), data.path, data.data_root, (p) => loadDstDir(p));
+
+      const rows = [
+        ...(data.dirs || []).map((d) => `
+          <tr>
+            <td><a class="dir-link" data-dopen="${escapeHtml(d.path)}">📁 ${escapeHtml(d.name)}</a></td>
+            <td class="muted">DIR</td>
+          </tr>
+        `),
+        ...(data.files || []).map((f) => `
+          <tr>
+            <td class="muted file-name">📄 ${escapeHtml(f.name)}</td>
+            <td class="muted">${fmtBytes(f.size_bytes)}</td>
+          </tr>
+        `),
+      ];
+      $("dstTableBody").innerHTML = rows.length
+        ? rows.join("")
+        : `<tr><td colspan="2" class="muted">Carpeta destino vacía.</td></tr>`;
+    } catch (err) {
+      showToast(err.message);
+    }
+  } else {
+    const target = pathOverride !== undefined ? pathOverride : (state.dstRemotePath || (state.settings && state.settings.ftp_remote_dir) || "/");
+    state.dstRemotePath = target || "/";
+    $("dstPathInput").value = state.dstRemotePath;
+    $("dstActiveLabel").textContent = state.dstRemotePath;
+    $("dstDiskInfo").textContent = "";
+    $("btnDstUp").disabled = state.dstRemotePath === "/";
+
+    const shortcuts = ["/", "/install", "/nsp", "/switch"];
+    renderBookmarksBar(
+      $("dstBookmarks"),
+      shortcuts.map((p) => ({ label: p, path: p })),
+      false,
+      (p) => loadDstDir(p)
+    );
+    renderBreadcrumbs($("dstBreadcrumbs"), state.dstRemotePath, "/", (p) => loadDstDir(p));
+
+    $("dstTableBody").innerHTML = `<tr><td colspan="2" class="muted">Cargando carpetas FTP...</td></tr>`;
+    try {
+      const res = await api(`/api/ftp/dirs?path=${encodeURIComponent(state.dstRemotePath)}`);
+      if (!res.ok) {
+        $("dstTableBody").innerHTML = `<tr><td colspan="2" class="muted">No conectado (${escapeHtml(res.error || "revisa Configuración")}). Puedes escribir la ruta arriba igualmente.</td></tr>`;
+        return;
+      }
+      const base = res.path === "/" ? "" : res.path;
+      const rows = (res.dirs || []).map((name) => `
+        <tr>
+          <td><a class="dir-link" data-dopen="${escapeHtml(`${base}/${name}`)}">📁 ${escapeHtml(name)}</a></td>
+          <td class="muted">DIR</td>
+        </tr>
+      `);
+      $("dstTableBody").innerHTML = rows.length
+        ? rows.join("")
+        : `<tr><td colspan="2" class="muted">Sin subcarpetas en ${escapeHtml(state.dstRemotePath)}.</td></tr>`;
+    } catch (err) {
+      $("dstTableBody").innerHTML = `<tr><td colspan="2" class="muted">${escapeHtml(err.message)}</td></tr>`;
+    }
+  }
+}
+
+$("dstTableBody").addEventListener("click", (e) => {
+  const openEl = e.target.closest("[data-dopen]");
+  if (openEl) loadDstDir(openEl.dataset.dopen);
+});
+
+$("btnDstUp").onclick = () => {
+  if (state.exploreMode === "mover") {
+    if (state.dstLocalParent) loadDstDir(state.dstLocalParent);
+  } else {
+    const cur = state.dstRemotePath || "/";
+    const idx = cur.lastIndexOf("/");
+    loadDstDir(idx <= 0 ? "/" : cur.slice(0, idx));
+  }
+};
+$("btnDstGo").onclick = () => loadDstDir($("dstPathInput").value.trim());
+$("dstPathInput").addEventListener("keydown", (e) => { if (e.key === "Enter") loadDstDir($("dstPathInput").value.trim()); });
+$("btnDstRefresh").onclick = () => loadDstDir();
+
+$("btnDstNewDir").onclick = async () => {
+  if (state.exploreMode !== "mover") return;
+  const name = prompt(`Crear carpeta nueva dentro de:\n${state.dstLocalPath}`);
+  if (!name) return;
+  try {
+    const res = await api("/api/fs/mkdir", { method: "POST", body: JSON.stringify({ parent: state.dstLocalPath, name }) });
+    showToast("Carpeta creada en destino");
+    loadDstDir(res.path);
+  } catch (err) {
+    showToast(err.message);
+  }
+};
+
+// --- AÑADIR A LA COLA ---
+async function enqueuePaths(paths, recursive, onlySwitch, startNow) {
   if (!paths.length) return showToast("Selecciona al menos un archivo o carpeta");
+  let destDir = "";
+  if (!state.useAutoDest) {
+    destDir = state.exploreMode === "mover" ? state.dstLocalPath : state.dstRemotePath;
+  }
   const payload = {
     kind: state.exploreMode,
     paths,
     recursive,
     only_switch: onlySwitch,
-    base_browse_dir: state.currentPath,
-    operation: state.exploreMode === "mover" ? $("exploreMoverOp").value : null,
-    dest_dir: state.exploreMode === "mover" ? $("exploreMoverDest").value.trim() : $("exploreFtpDest").value.trim(),
+    base_browse_dir: state.srcPath,
+    operation: state.exploreMode === "mover" ? state.moverOp : null,
+    dest_dir: destDir,
   };
   try {
     const res = await api("/api/queue/add", { method: "POST", body: JSON.stringify(payload) });
-    showToast(`Añadidos: ${res.added}${res.skipped ? ` (omitidos por colisión: ${res.skipped})` : ""}`);
-    loadDir(state.currentPath);
+    if (startNow && res.added > 0) {
+      await api(`/api/queue/${state.exploreMode}/start`, { method: "POST" });
+      showToast(`Añadidos ${res.added} y cola iniciada`);
+    } else {
+      showToast(`Añadidos: ${res.added}${res.skipped ? ` (omitidos por colisión: ${res.skipped})` : ""}`);
+    }
+    loadSrcDir(state.srcPath);
     refreshStatus();
   } catch (err) {
     showToast(err.message);
   }
 }
 
-$("btnAddSelected").onclick = () => enqueuePaths(Array.from(state.selectedPaths), true, false);
+$("btnAddSelected").onclick = () => enqueuePaths(Array.from(state.selectedPaths), true, false, false);
+$("btnSendAndStart").onclick = () => enqueuePaths(Array.from(state.selectedPaths), true, false, true);
 $("btnAddSwitchOnly").onclick = () => {
   const paths = state.selectedPaths.size
     ? Array.from(state.selectedPaths)
-    : (state.fsData?.files || []).filter((f) => f.switch_type).map((f) => f.path);
-  enqueuePaths(paths, true, true);
+    : (state.srcData?.files || []).filter((f) => f.switch_type).map((f) => f.path);
+  enqueuePaths(paths, true, true, false);
 };
 
 // --- COLAS ---
@@ -325,7 +531,7 @@ async function loadQueue() {
     const isProc = it.status === "PROC";
     const sw = it.switch_type ? `<span class="tag tag-${it.switch_type.toLowerCase()}">${it.switch_type}</span> ` : "";
     const opBtn = it.kind === "mover" && !isProc
-      ? `<button class="btn btn-sm" data-qop="${it.id}" title="Alternar copiar/mover">⇄</button>`
+      ? `<button type="button" class="btn btn-sm" data-qop="${it.id}" title="Alternar copiar/mover">⇄</button>`
       : "";
     return `
       <tr>
@@ -341,12 +547,12 @@ async function loadQueue() {
         <td>${fmtBytes(it.size_bytes)}</td>
         <td>
           <div class="inline-group">
-            <button class="btn btn-sm" data-qmove="${it.id}:top" ${isProc ? "disabled" : ""} title="Al principio">⤒</button>
-            <button class="btn btn-sm" data-qmove="${it.id}:up" ${isProc ? "disabled" : ""} title="Subir">↑</button>
-            <button class="btn btn-sm" data-qmove="${it.id}:down" ${isProc ? "disabled" : ""} title="Bajar">↓</button>
-            <button class="btn btn-sm" data-qpause="${it.id}" ${isProc ? "disabled" : ""} title="Pausar/Reanudar">⏯</button>
+            <button type="button" class="btn btn-sm" data-qmove="${it.id}:top" ${isProc ? "disabled" : ""} title="Al principio">⤒</button>
+            <button type="button" class="btn btn-sm" data-qmove="${it.id}:up" ${isProc ? "disabled" : ""} title="Subir">↑</button>
+            <button type="button" class="btn btn-sm" data-qmove="${it.id}:down" ${isProc ? "disabled" : ""} title="Bajar">↓</button>
+            <button type="button" class="btn btn-sm" data-qpause="${it.id}" ${isProc ? "disabled" : ""} title="Pausar/Reanudar">⏯</button>
             ${opBtn}
-            <button class="btn btn-sm btn-danger" data-qdel="${it.id}" ${isProc ? "disabled" : ""} title="Quitar">✕</button>
+            <button type="button" class="btn btn-sm btn-danger" data-qdel="${it.id}" ${isProc ? "disabled" : ""} title="Quitar">✕</button>
           </div>
         </td>
       </tr>
@@ -422,7 +628,7 @@ async function loadSettings() {
   $("cfgFtpPassive").checked = !!s.ftp_passive;
   $("cfgFtpTls").checked = !!s.ftp_tls;
   $("cfgFtpVerifySize").checked = !!s.ftp_verify_size;
-  $("exploreMoverOp").value = s.mover_operation || "copiar";
+  setMoverOp(s.mover_operation || "copiar");
 }
 
 $("settingsForm").addEventListener("submit", async (e) => {
@@ -525,76 +731,66 @@ $("logFilterKind").onchange = loadLogs;
 $("btnRefreshLogs").onclick = loadLogs;
 $("btnClearLogs").onclick = async () => { await api("/api/logs", { method: "DELETE" }); loadLogs(); };
 
-// --- PICKER MODAL (Local / FTP) ---
-async function openPicker(mode, initialPath) {
-  state.picker.mode = mode;
+// --- MODAL SELECTOR DE CARPETA (PARA CONFIGURACIÓN) ---
+document.querySelectorAll("[data-browse-input]").forEach((btn) => {
+  btn.onclick = () => {
+    const inputId = btn.dataset.browseInput;
+    openPicker(inputId, $(inputId).value || "");
+  };
+});
+
+async function openPicker(targetInputId, initialPath) {
+  state.picker.targetInputId = targetInputId;
   $("pickerModal").classList.remove("hidden");
-  $("pickerTitle").textContent = mode === "local" ? "Elegir carpeta destino local" : "Elegir carpeta destino FTP";
-  const shortcuts = $("pickerShortcuts");
-  if (mode === "ftp") {
-    shortcuts.innerHTML = ["/", "/install", "/nsp", "/switch"].map((p) =>
-      `<button type="button" class="btn btn-sm" data-pk="${p}">${p}</button>`
-    ).join("");
-  } else {
-    const favs = (state.settings && state.settings.mover_favorites) || [];
-    shortcuts.innerHTML = favs.map((p) =>
-      `<button type="button" class="btn btn-sm" data-pk="${escapeHtml(p)}">★ ${escapeHtml(p.split("/").pop() || p)}</button>`
-    ).join("");
-  }
-  shortcuts.querySelectorAll("[data-pk]").forEach((b) => { b.onclick = () => loadPickerDir(b.dataset.pk); });
+  $("pickerTitle").textContent = "Elegir carpeta del servidor";
   await loadPickerDir(initialPath);
 }
 
 async function loadPickerDir(path) {
-  state.picker.path = path;
-  $("pickerPathInput").value = path;
-  if (state.picker.mode === "local") {
-    const qs = new URLSearchParams({ kind: "mover" });
-    if (path) qs.set("path", path);
-    const data = await api(`/api/fs/list?${qs}`);
-    state.picker.path = data.path;
-    $("pickerPathInput").value = data.path;
-    $("pickerList").innerHTML = (data.dirs || []).map((d) =>
-      `<div class="picker-row" data-pkopen="${escapeHtml(d.path)}">📁 ${escapeHtml(d.name)}</div>`
-    ).join("") || `<div class="picker-row muted">(Sin subcarpetas)</div>`;
-  } else {
-    const res = await api(`/api/ftp/dirs?path=${encodeURIComponent(path || "/")}`);
-    if (!res.ok) {
-      $("pickerList").innerHTML = `<div class="picker-row muted">${escapeHtml(res.error || "Error")}</div>`;
-      return;
-    }
-    const base = res.path === "/" ? "" : res.path;
-    $("pickerList").innerHTML = (res.dirs || []).map((name) =>
-      `<div class="picker-row" data-pkopen="${escapeHtml(`${base}/${name}`)}">📁 ${escapeHtml(name)}</div>`
-    ).join("") || `<div class="picker-row muted">(Sin subcarpetas)</div>`;
-  }
+  const qs = new URLSearchParams({ kind: "mover" });
+  if (path) qs.set("path", path);
+  const data = await api(`/api/fs/list?${qs}`);
+  state.picker.path = data.path;
+  state.picker.parent = data.parent;
+  $("pickerPathInput").value = data.path;
+  $("btnPickerUp").disabled = !data.parent;
+  renderBookmarksBar($("pickerShortcuts"), data.bookmarks || [], true, (p) => loadPickerDir(p));
+  renderBreadcrumbs($("pickerBreadcrumbs"), data.path, data.data_root, (p) => loadPickerDir(p));
+  $("pickerList").innerHTML = (data.dirs || []).map((d) =>
+    `<div class="picker-row" data-pkopen="${escapeHtml(d.path)}">📁 ${escapeHtml(d.name)}</div>`
+  ).join("") || `<div class="picker-row muted">(Sin subcarpetas)</div>`;
   $("pickerList").querySelectorAll("[data-pkopen]").forEach((r) => {
     r.onclick = () => loadPickerDir(r.dataset.pkopen);
   });
 }
 
-$("btnPickLocalDest").onclick = () => openPicker("local", $("exploreMoverDest").value || state.currentPath);
-$("btnPickRemoteDest").onclick = () => openPicker("ftp", $("exploreFtpDest").value || "/");
 $("btnPickerClose").onclick = () => $("pickerModal").classList.add("hidden");
 $("btnPickerCancel").onclick = () => $("pickerModal").classList.add("hidden");
 $("btnPickerGo").onclick = () => loadPickerDir($("pickerPathInput").value);
-$("btnPickerUp").onclick = () => {
-  const cur = state.picker.path || "/";
-  const idx = cur.lastIndexOf("/");
-  const parent = idx <= 0 ? "/" : cur.slice(0, idx);
-  loadPickerDir(parent);
+$("pickerPathInput").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); loadPickerDir($("pickerPathInput").value); } });
+$("btnPickerUp").onclick = () => { if (state.picker.parent) loadPickerDir(state.picker.parent); };
+$("btnPickerNewDir").onclick = async () => {
+  const name = prompt(`Nueva carpeta dentro de:\n${state.picker.path}`);
+  if (!name) return;
+  try {
+    const res = await api("/api/fs/mkdir", { method: "POST", body: JSON.stringify({ parent: state.picker.path, name }) });
+    loadPickerDir(res.path);
+  } catch (err) {
+    showToast(err.message);
+  }
 };
 $("btnPickerUse").onclick = () => {
-  if (state.picker.mode === "local") $("exploreMoverDest").value = state.picker.path;
-  else $("exploreFtpDest").value = state.picker.path;
+  if (state.picker.targetInputId) {
+    $(state.picker.targetInputId).value = state.picker.path;
+  }
   $("pickerModal").classList.add("hidden");
 };
 
 // --- INIT ---
 (async function init() {
   await loadSettings();
-  await loadDir("");
+  await loadSrcDir("");
+  await loadDstDir();
   await refreshStatus();
   setInterval(refreshStatus, 1500);
 })();
-

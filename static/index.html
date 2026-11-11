@@ -68,78 +68,127 @@
   </section>
 
   <main class="container">
-    <!-- TAB: EXPLORAR -->
+    <!-- TAB: EXPLORAR (DOBLE PANEL ORIGEN -> DESTINO) -->
     <section class="tab-panel active" id="tab-explore">
-      <div class="toolbar">
+      <div class="toolbar explore-top">
         <div class="mode-switch">
-          <button class="btn btn-mode active" data-mode="mover" id="modeBtnMover">💾 Para Mover / Copiar</button>
-          <button class="btn btn-mode" data-mode="ftp" id="modeBtnFtp">📡 Para Subir FTP</button>
+          <button class="btn btn-mode active" data-mode="mover" id="modeBtnMover">💾 Copiar / Mover local</button>
+          <button class="btn btn-mode" data-mode="ftp" id="modeBtnFtp">📡 Subir por FTP / Switch</button>
         </div>
 
-        <div class="dest-box">
-          <div id="exploreMoverOpts" class="inline-group">
-            <label>Operación:
-              <select id="exploreMoverOp">
-                <option value="copiar">Copiar</option>
-                <option value="mover">Mover</option>
-              </select>
-            </label>
-            <label>Destino:
-              <input type="text" id="exploreMoverDest" placeholder="Automático (según config)" readonly>
-            </label>
-            <button class="btn btn-sm" id="btnPickLocalDest">📂 Elegir</button>
-            <button class="btn btn-sm btn-ghost" id="btnResetLocalDest">Auto</button>
-          </div>
-
-          <div id="exploreFtpOpts" class="inline-group hidden">
-            <label>Destino FTP:
-              <input type="text" id="exploreFtpDest" placeholder="Automático (según config)">
-            </label>
-            <button class="btn btn-sm" id="btnPickRemoteDest">🌐 Explorar FTP</button>
-            <button class="btn btn-sm btn-ghost" id="btnResetRemoteDest">Auto</button>
+        <div class="inline-group" id="exploreMoverOpGroup">
+          <span class="muted">Acción:</span>
+          <div class="segmented">
+            <button type="button" class="btn btn-sm active" id="opBtnCopiar" data-op="copiar">📋 Copiar</button>
+            <button type="button" class="btn btn-sm" id="opBtnMover" data-op="mover">✂️ Mover</button>
           </div>
         </div>
-      </div>
 
-      <div class="bookmarks-bar" id="bookmarksBar"></div>
-
-      <div class="fs-controls">
-        <div class="path-nav">
-          <button class="btn btn-sm" id="btnDirUp" title="Subir carpeta">⬆ Subir</button>
-          <input type="text" id="currentPathInput" class="path-input" aria-label="Ruta actual">
-          <button class="btn btn-sm" id="btnGoPath">Ir</button>
-          <button class="btn btn-sm" id="btnNewDir">+ Carpeta</button>
-        </div>
-        <div class="filter-nav">
-          <input type="search" id="fsFilter" placeholder="Filtrar por nombre...">
-          <label class="chk-inline"><input type="checkbox" id="chkShowHidden"> Ocultos</label>
-          <span class="disk-info" id="fsDiskInfo"></span>
-        </div>
-      </div>
-
-      <div class="batch-bar">
         <div class="inline-group">
-          <button class="btn btn-sm" id="btnSelectAll">☑ Seleccionar todo</button>
-          <button class="btn btn-sm btn-ghost" id="btnSelectNone">Deseleccionar</button>
-          <button class="btn btn-sm btn-primary" id="btnAddSelected">➕ Añadir seleccionados</button>
-          <button class="btn btn-sm btn-accent hidden" id="btnAddSwitchOnly">🎮 Añadir juegos Switch</button>
+          <label class="chk-inline" title="Si se activa, ignora la carpeta derecha y usa el destino automático de Configuración">
+            <input type="checkbox" id="chkAutoDest"> Usar destino automático (config)
+          </label>
         </div>
-        <span class="muted" id="selectionSummary">0 elementos seleccionados</span>
       </div>
 
-      <div class="table-wrap">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th style="width:36px"><input type="checkbox" id="chkHeaderAll"></th>
-              <th>Nombre</th>
-              <th style="width:110px">Tipo / Estado</th>
-              <th style="width:110px">Tamaño</th>
-              <th style="width:160px">Acción</th>
-            </tr>
-          </thead>
-          <tbody id="fsTableBody"></tbody>
-        </table>
+      <div class="dual-panes">
+        <!-- PANEL IZQUIERDO: ORIGEN -->
+        <div class="pane">
+          <div class="pane-head">
+            <div>
+              <span class="pane-title">📂 Origen (Servidor)</span>
+              <span class="disk-info" id="srcDiskInfo"></span>
+            </div>
+            <div class="inline-group">
+              <label class="chk-inline"><input type="checkbox" id="chkShowHidden"> Ocultos</label>
+              <button class="btn btn-sm" id="btnSrcNewDir">+ Carpeta</button>
+            </div>
+          </div>
+
+          <div class="bookmarks-bar" id="srcBookmarks"></div>
+          <div class="breadcrumbs" id="srcBreadcrumbs"></div>
+
+          <div class="path-nav">
+            <button class="btn btn-sm" id="btnSrcUp" title="Subir carpeta">⬆</button>
+            <input type="text" id="srcPathInput" class="path-input" aria-label="Ruta origen">
+            <button class="btn btn-sm" id="btnSrcGo">Ir</button>
+            <input type="search" id="fsFilter" class="filter-input" placeholder="Filtrar...">
+          </div>
+
+          <div class="batch-bar">
+            <div class="inline-group">
+              <button class="btn btn-sm" id="btnSelectAll">☑ Todo</button>
+              <button class="btn btn-sm btn-ghost" id="btnSelectNone">Ninguno</button>
+              <span class="muted" id="selectionSummary">0 seleccionados</span>
+            </div>
+            <div class="inline-group">
+              <button class="btn btn-sm btn-primary" id="btnAddSelected">➕ A la cola →</button>
+              <button class="btn btn-sm btn-green" id="btnSendAndStart">⚡ Enviar e iniciar</button>
+              <button class="btn btn-sm btn-accent hidden" id="btnAddSwitchOnly">🎮 Solo Switch</button>
+            </div>
+          </div>
+
+          <div class="table-wrap pane-table">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th style="width:34px"><input type="checkbox" id="chkHeaderAll"></th>
+                  <th>Nombre</th>
+                  <th style="width:95px">Estado</th>
+                  <th style="width:88px">Tamaño</th>
+                  <th style="width:118px">Enviar</th>
+                </tr>
+              </thead>
+              <tbody id="fsTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- PANEL DERECHO: DESTINO -->
+        <div class="pane">
+          <div class="pane-head">
+            <div>
+              <span class="pane-title" id="dstPaneTitle">🎯 Destino (Carpeta donde se guardará)</span>
+              <span class="disk-info" id="dstDiskInfo"></span>
+            </div>
+            <div class="inline-group">
+              <button class="btn btn-sm" id="btnDstRefresh" title="Actualizar destino">🔄</button>
+              <button class="btn btn-sm" id="btnDstNewDir">+ Carpeta</button>
+            </div>
+          </div>
+
+          <div id="dstAutoNotice" class="banner hidden">
+            Modo <strong>Destino automático</strong> activado: se usará la ruta por defecto de Configuración (manteniendo o no subcarpetas según tus ajustes). Desmarca la casilla superior para elegir aquí la carpeta exacta.
+          </div>
+
+          <div id="dstNavigator">
+            <div class="bookmarks-bar" id="dstBookmarks"></div>
+            <div class="breadcrumbs" id="dstBreadcrumbs"></div>
+
+            <div class="path-nav">
+              <button class="btn btn-sm" id="btnDstUp" title="Subir carpeta">⬆</button>
+              <input type="text" id="dstPathInput" class="path-input" aria-label="Ruta destino">
+              <button class="btn btn-sm" id="btnDstGo">Ir</button>
+            </div>
+
+            <div class="dst-target-pill">
+              <span class="muted">Destino activo:</span>
+              <code id="dstActiveLabel">-</code>
+            </div>
+
+            <div class="table-wrap pane-table">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Contenido en destino</th>
+                    <th style="width:90px">Tamaño</th>
+                  </tr>
+                </thead>
+                <tbody id="dstTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -184,10 +233,16 @@
           <h2>💾 Configuración de Mover / Copiar</h2>
           <div class="form-grid">
             <label>Carpeta origen inicial
-              <input type="text" name="mover_origin" id="cfgMoverOrigin">
+              <div class="input-with-btn">
+                <input type="text" name="mover_origin" id="cfgMoverOrigin">
+                <button type="button" class="btn btn-sm" data-browse-input="cfgMoverOrigin">📂</button>
+              </div>
             </label>
             <label>Carpeta destino por defecto
-              <input type="text" name="mover_dest" id="cfgMoverDest">
+              <div class="input-with-btn">
+                <input type="text" name="mover_dest" id="cfgMoverDest">
+                <button type="button" class="btn btn-sm" data-browse-input="cfgMoverDest">📂</button>
+              </div>
             </label>
             <label>Operación por defecto
               <select name="mover_operation" id="cfgMoverOp">
@@ -254,7 +309,10 @@
               <input type="password" name="ftp_password" id="cfgFtpPassword" placeholder="Dejar vacío para mantener" autocomplete="new-password">
             </label>
             <label>Carpeta local inicial
-              <input type="text" name="ftp_local_root" id="cfgFtpLocalRoot">
+              <div class="input-with-btn">
+                <input type="text" name="ftp_local_root" id="cfgFtpLocalRoot">
+                <button type="button" class="btn btn-sm" data-browse-input="cfgFtpLocalRoot">📂</button>
+              </div>
             </label>
             <label>Carpeta remota por defecto
               <input type="text" name="ftp_remote_dir" id="cfgFtpRemoteDir" placeholder="/">
@@ -305,23 +363,25 @@
     </section>
   </main>
 
-  <!-- MODAL EXPLORADOR DESTINO -->
+  <!-- MODAL EXPLORADOR CARPETAS (PARA CONFIGURACIÓN) -->
   <div class="modal hidden" id="pickerModal">
     <div class="modal-card">
       <div class="modal-head">
-        <h3 id="pickerTitle">Elegir carpeta destino</h3>
-        <button class="btn btn-sm btn-ghost" id="btnPickerClose">✕</button>
+        <h3 id="pickerTitle">Elegir carpeta</h3>
+        <button type="button" class="btn btn-sm btn-ghost" id="btnPickerClose">✕</button>
       </div>
       <div class="picker-shortcuts" id="pickerShortcuts"></div>
-      <div class="path-nav">
-        <button class="btn btn-sm" id="btnPickerUp">⬆ Subir</button>
+      <div class="breadcrumbs" id="pickerBreadcrumbs"></div>
+      <div class="path-nav modal-path-nav">
+        <button type="button" class="btn btn-sm" id="btnPickerUp">⬆ Subir</button>
         <input type="text" id="pickerPathInput" class="path-input">
-        <button class="btn btn-sm" id="btnPickerGo">Ir</button>
+        <button type="button" class="btn btn-sm" id="btnPickerGo">Ir</button>
+        <button type="button" class="btn btn-sm" id="btnPickerNewDir">+ Carpeta</button>
       </div>
       <div class="picker-list" id="pickerList"></div>
       <div class="modal-foot">
-        <button class="btn btn-primary" id="btnPickerUse">✓ Usar esta carpeta</button>
-        <button class="btn btn-ghost" id="btnPickerCancel">Cancelar</button>
+        <button type="button" class="btn btn-primary" id="btnPickerUse">✓ Usar esta carpeta</button>
+        <button type="button" class="btn btn-ghost" id="btnPickerCancel">Cancelar</button>
       </div>
     </div>
   </div>
@@ -331,4 +391,3 @@
   <script src="/static/app.js"></script>
 </body>
 </html>
-
