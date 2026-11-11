@@ -112,6 +112,7 @@ $("mainTabs").addEventListener("click", (e) => {
   if (tab === "queue") loadQueue();
   if (tab === "config") loadSettings();
   if (tab === "logs") loadLogs();
+  if (tab === "readme") loadReadme();
 });
 
 // --- STATUS POLLING ---
@@ -730,6 +731,196 @@ async function loadLogs() {
 $("logFilterKind").onchange = loadLogs;
 $("btnRefreshLogs").onclick = loadLogs;
 $("btnClearLogs").onclick = async () => { await api("/api/logs", { method: "DELETE" }); loadLogs(); };
+
+// --- DOCUMENTACIÓN / README ---
+let readmeLoaded = false;
+
+function slugifyHeading(text) {
+  return text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/\s/g, "-");
+}
+
+function formatInlineMarkdown(raw) {
+  let s = escapeHtml(raw);
+  const codeSpans = [];
+  s = s.replace(/`([^`]+)`/g, (_m, code) => {
+    const idx = codeSpans.length;
+    codeSpans.push(`<code>${code}</code>`);
+    return `\u0000CODE${idx}\u0000`;
+  });
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label, href) => {
+    const cleanHref = href.replace(/&amp;/g, "&");
+    if (cleanHref.startsWith("#")) {
+      return `<a href="${escapeHtml(cleanHref)}" data-readme-anchor="${escapeHtml(cleanHref.slice(1))}">${label}</a>`;
+    }
+    if (/^https?:\/\//i.test(cleanHref)) {
+      return `<a href="${escapeHtml(cleanHref)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    }
+    return label;
+  });
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  s = s.replace(/\u0000CODE(\d+)\u0000/g, (_m, idx) => codeSpans[Number(idx)]);
+  return s;
+}
+
+function renderMarkdown(md) {
+  const lines = String(md || "").replace(/\r\n/g, "\n").split("\n");
+  const out = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Bloque de código ```
+    const fence = line.match(/^```(\S*)\s*$/);
+    if (fence) {
+      i++;
+      const codeLines = [];
+      while (i < lines.length && !/^```\s*$/.test(lines[i])) {
+        codeLines.push(lines[i]);
+        i++;
+      }
+      i++; // saltar cierre ```
+      const codeText = codeLines.join("\n");
+      out.push(
+        `<div class="readme-code-wrap"><button type="button" class="copy-code-btn">Copiar</button><pre><code>${escapeHtml(codeText)}</code></pre></div>`
+      );
+      continue;
+    }
+
+    // Separador ---
+    if (/^---+\s*$/.test(line)) {
+      out.push("<hr>");
+      i++;
+      continue;
+    }
+
+    // Encabezados # .. ####
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      const level = heading[1].length;
+      const rawTitle = heading[2].trim();
+      const slug = slugifyHeading(rawTitle);
+      out.push(`<h${level} id="readme-${escapeHtml(slug)}">${formatInlineMarkdown(rawTitle)}</h${level}>`);
+      i++;
+      continue;
+    }
+
+    // Tabla GFM
+    if (line.trim().startsWith("|") && i + 1 < lines.length && /^\s*\|?[\s:-]+\|/.test(lines[i + 1])) {
+      const parseRow = (r) => r.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+      const headers = parseRow(line);
+      i += 2; // saltar cabecera + separador
+      const bodyRows = [];
+      while (i < lines.length && lines[i].trim().startsWith("|")) {
+        bodyRows.push(parseRow(lines[i]));
+        i++;
+      }
+      const ths = headers.map((h) => `<th>${formatInlineMarkdown(h)}</th>`).join("");
+      const trs = bodyRows
+        .map((row) => `<tr>${row.map((c) => `<td>${formatInlineMarkdown(c)}</td>`).join("")}</tr>`)
+        .join("");
+      out.push(`<div class="readme-table-wrap"><table><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table></div>`);
+      continue;
+    }
+
+    // Blockquote >
+    if (line.trimStart().startsWith(">")) {
+      const qLines = [];
+      while (i < lines.length && lines[i].trimStart().startsWith(">")) {
+        qLines.push(lines[i].replace(/^\s*>\s?/, ""));
+        i++;
+      }
+      out.push(`<blockquote>${qLines.map((q) => formatInlineMarkdown(q)).join("<br>")}</blockquote>`);
+      continue;
+    }
+
+    // Lista no ordenada - o *
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+        items.push(`<li>${formatInlineMarkdown(lines[i].replace(/^\s*[-*]\s+/, ""))}</li>`);
+        i++;
+      }
+      out.push(`<ul>${items.join("")}</ul>`);
+      continue;
+    }
+
+    // Lista ordenada 1.
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+        items.push(`<li>${formatInlineMarkdown(lines[i].replace(/^\s*\d+\.\s+/, ""))}</li>`);
+        i++;
+      }
+      out.push(`<ol>${items.join("")}</ol>`);
+      continue;
+    }
+
+    // Línea vacía
+    if (!line.trim()) {
+      i++;
+      continue;
+    }
+
+    // Párrafo continuo
+    const para = [];
+    while (
+      i < lines.length &&
+      lines[i].trim() &&
+      !/^(#{1,4}\s+|```|---+\s*$|>\s?|\s*[-*]\s+|\s*\d+\.\s+)/.test(lines[i]) &&
+      !(lines[i].trim().startsWith("|") && i + 1 < lines.length && /^\s*\|?[\s:-]+\|/.test(lines[i + 1]))
+    ) {
+      para.push(formatInlineMarkdown(lines[i].trim()));
+      i++;
+    }
+    out.push(`<p>${para.join(" ")}</p>`);
+  }
+
+  return out.join("\n");
+}
+
+async function loadReadme(force = false) {
+  if (readmeLoaded && !force) return;
+  const box = $("readmeBody");
+  box.innerHTML = `<p class="muted">Cargando documentación...</p>`;
+  try {
+    const data = await api("/api/readme");
+    box.innerHTML = renderMarkdown(data.content || "");
+    readmeLoaded = true;
+  } catch (err) {
+    box.innerHTML = `<p class="sub-err">${escapeHtml(err.message)}</p>`;
+  }
+}
+
+$("readmeBody").addEventListener("click", async (e) => {
+  const copyBtn = e.target.closest(".copy-code-btn");
+  if (copyBtn) {
+    const codeEl = copyBtn.parentElement.querySelector("code");
+    if (codeEl && navigator.clipboard) {
+      await navigator.clipboard.writeText(codeEl.textContent || "");
+      copyBtn.textContent = "✓ Copiado";
+      setTimeout(() => { copyBtn.textContent = "Copiar"; }, 1500);
+    }
+    return;
+  }
+  const anchor = e.target.closest("[data-readme-anchor]");
+  if (anchor) {
+    e.preventDefault();
+    const rawId = anchor.dataset.readmeAnchor;
+    const clean = rawId.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const target = document.getElementById(`readme-${clean}`) || document.getElementById(`readme-${rawId}`);
+    if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+});
+
+$("btnRefreshReadme").onclick = () => loadReadme(true);
+$("btnReadmeTop").onclick = () => window.scrollTo({ top: 0, behavior: "smooth" });
 
 // --- MODAL SELECTOR DE CARPETA (PARA CONFIGURACIÓN) ---
 document.querySelectorAll("[data-browse-input]").forEach((btn) => {

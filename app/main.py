@@ -31,6 +31,7 @@ from .switch_utils import SWITCH_EXTENSIONS, detect_switch_type, scan_switch_ftp
 from .worker_manager import WorkerManager
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+README_PATH = Path(__file__).resolve().parent.parent / "README.md"
 VIRTUAL_ROOT_DIRS = {"proc", "sys", "dev", "run"}
 
 settings_store = SettingsStore()
@@ -121,6 +122,13 @@ def index() -> FileResponse:
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/readme")
+def get_readme() -> dict[str, str]:
+    if not README_PATH.is_file():
+        raise HTTPException(status_code=404, detail="README.md no encontrado")
+    return {"content": README_PATH.read_text(encoding="utf-8")}
 
 
 @app.get("/api/status")

@@ -30,6 +30,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
 COPY static/ ./static/
 COPY scripts/ ./scripts/
+COPY README.md ./README.md
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh /app/scripts/*.sh \
     && ln -sf /app/scripts/toolbox.sh /usr/local/bin/toolbox \

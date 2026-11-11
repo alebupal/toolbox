@@ -2025,6 +2025,12 @@ mostrar_ayuda() {
     ./subeftp.sh --parar                Detiene de forma limpia la subida en segundo plano
     ./subeftp.sh --estado               Muestra el estado del worker y la cola de subidas
     ./subeftp.sh --pendientes           Lista los ficheros pendientes y el tiempo estimado
+    ./subeftp.sh --probar               Prueba la conexión FTP configurada
+    ./subeftp.sh --buscar-switch        Escanea la red LAN buscando DBI / ftpd en Switch
+    ./subeftp.sh --log [N]              Muestra las últimas N líneas del registro (def. 40)
+    -d, --destino RUTA                  Carpeta remota destino (ej: -d /install)
+    -j, --solo-switch                   Solo añade juegos Switch (.nsp/.nsz/.xci/.xcz/.nro)
+    -s, --subir                         Con ficheros: añade y arranca la subida de inmediato
     -h, --help                          Muestra esta ayuda detallada y sale
 
   EXPLORADOR DE CARPETAS (Opción 1):
@@ -2144,15 +2150,29 @@ menu() {
 }
 
 anadir_desde_cli() {
-    local auto_arrancar=0
-    local -a archivos=()
-    local arg f n_encontrados=0
+    local auto_arrancar=0 solo_switch=0 dest_cli=""
+    local -a items=() archivos=()
+    local arg f ext n_encontrados=0
 
-    for arg in "$@"; do
+    while (($#)); do
+        arg="$1"; shift
         case "$arg" in
-            --anadir) continue ;;
+            --anadir) ;;
             -s | --subir | --start | --now | --ahora)
                 auto_arrancar=1
+                ;;
+            -j | --solo-switch)
+                solo_switch=1
+                ;;
+            -d | --destino)
+                (($#)) || { echo "Falta la ruta remota tras $arg"; exit 1; }
+                dest_cli="$1"; shift
+                ;;
+            --destino=*)
+                dest_cli="${arg#--destino=}"
+                ;;
+            --)
+                items+=("$@"); break
                 ;;
             -*)
                 echo "Opción no reconocida: $arg"
@@ -2160,21 +2180,36 @@ anadir_desde_cli() {
                 exit 1
                 ;;
             *)
-                if [[ -f $arg ]]; then
-                    archivos+=("$(readlink -f "$arg")")
-                    ((n_encontrados++))
-                elif [[ -d $arg ]]; then
-                    local d_abs
-                    d_abs="$(readlink -f "$arg")"
-                    while IFS= read -r -d '' f; do
-                        archivos+=("$f")
-                        ((n_encontrados++))
-                    done < <(find "$d_abs" -type f ! -name '.*' -print0 2>/dev/null | sort -z)
-                else
-                    echo "Aviso: no existe o no es accesible: $arg"
-                fi
+                items+=("$arg")
                 ;;
         esac
+    done
+
+    for arg in "${items[@]}"; do
+        if [[ -f $arg ]]; then
+            f="$(readlink -f "$arg")"
+            if ((solo_switch)); then
+                ext="${f##*.}"
+                ext="${ext,,}"
+                [[ $ext =~ ^(nsp|nsz|xci|xcz|nro)$ ]] || continue
+            fi
+            archivos+=("$f")
+            ((n_encontrados++))
+        elif [[ -d $arg ]]; then
+            local d_abs
+            d_abs="$(readlink -f "$arg")"
+            while IFS= read -r -d '' f; do
+                if ((solo_switch)); then
+                    ext="${f##*.}"
+                    ext="${ext,,}"
+                    [[ $ext =~ ^(nsp|nsz|xci|xcz|nro)$ ]] || continue
+                fi
+                archivos+=("$f")
+                ((n_encontrados++))
+            done < <(find "$d_abs" -type f ! -name '.*' -print0 2>/dev/null | sort -z)
+        else
+            echo "Aviso: no existe o no es accesible: $arg"
+        fi
     done
 
     if ((n_encontrados == 0)); then
@@ -2187,7 +2222,8 @@ anadir_desde_cli() {
         asistente_conf
     fi
 
-    anadir_a_cola "$CARPETA_REMOTA" "$CARPETA_LOCAL" "${archivos[@]}"
+    dest_cli="${dest_cli:-$CARPETA_REMOTA}"
+    anadir_a_cola "$dest_cli" "$CARPETA_LOCAL" "${archivos[@]}"
 
     if ((auto_arrancar)); then
         echo
@@ -2212,6 +2248,15 @@ main() {
         --worker) worker; exit ;;
         --estado) resumen_estado; imprimir_cola; exit ;;
         --pendientes) imprimir_pendientes; exit ;;
+        --buscar-switch) buscar_switch_red; exit ;;
+        --probar) probar_conexion; exit ;;
+        --log)
+            if [[ -f $LOG ]]; then
+                tail -n "${2:-40}" "$LOG"
+            else
+                echo "(sin registros todavía)"
+            fi
+            exit 0 ;;
         --parar) detener_worker; exit ;;
         --subir)
             if (($# == 1)); then

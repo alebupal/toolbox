@@ -1934,6 +1934,7 @@ mostrar_ayuda() {
     ./mover.sh --parar                    Detiene de forma limpia el proceso en segundo plano
     ./mover.sh --estado                   Muestra el estado del proceso y la cola
     ./mover.sh --pendientes               Lista los pendientes y el tiempo estimado
+    ./mover.sh --log [N]                  Muestra las últimas N líneas del registro (def. 40)
     -c, --copiar / -m, --mover            Operación para lo que se añade
     -d, --destino RUTA                    Carpeta destino (si no, la automática)
     -i, --iniciar                         Con ficheros: añade y arranca sin preguntar
@@ -2125,6 +2126,13 @@ main() {
         --worker) worker; exit ;;
         --estado) resumen_estado; imprimir_cola; exit ;;
         --pendientes) imprimir_pendientes; exit ;;
+        --log)
+            if [[ -f $LOG ]]; then
+                tail -n "${2:-40}" "$LOG"
+            else
+                echo "(sin registros todavía)"
+            fi
+            exit 0 ;;
         --parar) detener_worker; exit ;;
         --iniciar | -i)
             if (($# == 1)); then
