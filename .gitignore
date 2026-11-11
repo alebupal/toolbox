@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.db
+*.db-*
+.venv/
+venv/
+.pytest_cache/
+config_local/
+.env
+
+# Ficheros locales de estado si se ejecutan los scripts CLI fuera de Docker
+scripts/mover.conf
+scripts/subeftp.conf
+scripts/cola.txt*
+scripts/*.log*
+scripts/*.pid
+scripts/*.lock
+scripts/progreso.txt*
+scripts/orden_manual

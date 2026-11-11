@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Toolbox · Utilidades</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-icon">🧰</span>
+      <div>
+        <h1>Toolbox</h1>
+        <p class="subtitle">Utilidades del servidor · Mover / Copiar local + FTP / Switch</p>
+      </div>
+    </div>
+    <nav class="tabs" id="mainTabs">
+      <button class="tab active" data-tab="explore">📁 Explorar</button>
+      <button class="tab" data-tab="queue">📋 Colas <span class="badge-pill" id="tabQueueBadge">0</span></button>
+      <button class="tab" data-tab="config">⚙️ Configuración</button>
+      <button class="tab" data-tab="logs">📜 Registro</button>
+    </nav>
+  </header>
+
+  <section class="status-strip">
+    <div class="worker-card" id="cardMover">
+      <div class="worker-head">
+        <div>
+          <span class="worker-title">💾 Cola Mover / Copiar</span>
+          <span class="status-pill" id="moverState">Detenido</span>
+        </div>
+        <div class="worker-actions">
+          <button class="btn btn-sm btn-primary" id="btnStartMover">▶ Iniciar</button>
+          <button class="btn btn-sm btn-danger hidden" id="btnStopMover">⏹ Detener</button>
+        </div>
+      </div>
+      <div class="worker-meta" id="moverMeta">Pendientes: 0 · Completados: 0 · Errores: 0</div>
+      <div class="progress-wrap hidden" id="moverProgWrap">
+        <div class="progress-info">
+          <span id="moverProgFile">-</span>
+          <span id="moverProgStats">0%</span>
+        </div>
+        <div class="progress-bar"><div class="progress-fill" id="moverProgFill"></div></div>
+      </div>
+    </div>
+
+    <div class="worker-card" id="cardFtp">
+      <div class="worker-head">
+        <div>
+          <span class="worker-title">📡 Cola FTP / Switch</span>
+          <span class="status-pill" id="ftpState">Detenido</span>
+        </div>
+        <div class="worker-actions">
+          <button class="btn btn-sm btn-primary" id="btnStartFtp">▶ Iniciar</button>
+          <button class="btn btn-sm btn-danger hidden" id="btnStopFtp">⏹ Detener</button>
+        </div>
+      </div>
+      <div class="worker-meta" id="ftpMeta">Pendientes: 0 · Completados: 0 · Errores: 0</div>
+      <div class="progress-wrap hidden" id="ftpProgWrap">
+        <div class="progress-info">
+          <span id="ftpProgFile">-</span>
+          <span id="ftpProgStats">0%</span>
+        </div>
+        <div class="progress-bar"><div class="progress-fill ftp" id="ftpProgFill"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <main class="container">
+    <!-- TAB: EXPLORAR -->
+    <section class="tab-panel active" id="tab-explore">
+      <div class="toolbar">
+        <div class="mode-switch">
+          <button class="btn btn-mode active" data-mode="mover" id="modeBtnMover">💾 Para Mover / Copiar</button>
+          <button class="btn btn-mode" data-mode="ftp" id="modeBtnFtp">📡 Para Subir FTP</button>
+        </div>
+
+        <div class="dest-box">
+          <div id="exploreMoverOpts" class="inline-group">
+            <label>Operación:
+              <select id="exploreMoverOp">
+                <option value="copiar">Copiar</option>
+                <option value="mover">Mover</option>
+              </select>
+            </label>
+            <label>Destino:
+              <input type="text" id="exploreMoverDest" placeholder="Automático (según config)" readonly>
+            </label>
+            <button class="btn btn-sm" id="btnPickLocalDest">📂 Elegir</button>
+            <button class="btn btn-sm btn-ghost" id="btnResetLocalDest">Auto</button>
+          </div>
+
+          <div id="exploreFtpOpts" class="inline-group hidden">
+            <label>Destino FTP:
+              <input type="text" id="exploreFtpDest" placeholder="Automático (según config)">
+            </label>
+            <button class="btn btn-sm" id="btnPickRemoteDest">🌐 Explorar FTP</button>
+            <button class="btn btn-sm btn-ghost" id="btnResetRemoteDest">Auto</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="bookmarks-bar" id="bookmarksBar"></div>
+
+      <div class="fs-controls">
+        <div class="path-nav">
+          <button class="btn btn-sm" id="btnDirUp" title="Subir carpeta">⬆ Subir</button>
+          <input type="text" id="currentPathInput" class="path-input" aria-label="Ruta actual">
+          <button class="btn btn-sm" id="btnGoPath">Ir</button>
+          <button class="btn btn-sm" id="btnNewDir">+ Carpeta</button>
+        </div>
+        <div class="filter-nav">
+          <input type="search" id="fsFilter" placeholder="Filtrar por nombre...">
+          <label class="chk-inline"><input type="checkbox" id="chkShowHidden"> Ocultos</label>
+          <span class="disk-info" id="fsDiskInfo"></span>
+        </div>
+      </div>
+
+      <div class="batch-bar">
+        <div class="inline-group">
+          <button class="btn btn-sm" id="btnSelectAll">☑ Seleccionar todo</button>
+          <button class="btn btn-sm btn-ghost" id="btnSelectNone">Deseleccionar</button>
+          <button class="btn btn-sm btn-primary" id="btnAddSelected">➕ Añadir seleccionados</button>
+          <button class="btn btn-sm btn-accent hidden" id="btnAddSwitchOnly">🎮 Añadir juegos Switch</button>
+        </div>
+        <span class="muted" id="selectionSummary">0 elementos seleccionados</span>
+      </div>
+
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width:36px"><input type="checkbox" id="chkHeaderAll"></th>
+              <th>Nombre</th>
+              <th style="width:110px">Tipo / Estado</th>
+              <th style="width:110px">Tamaño</th>
+              <th style="width:160px">Acción</th>
+            </tr>
+          </thead>
+          <tbody id="fsTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- TAB: COLAS -->
+    <section class="tab-panel" id="tab-queue">
+      <div class="toolbar">
+        <div class="mode-switch">
+          <button class="btn btn-mode active" data-qkind="mover" id="qTabMover">💾 Cola Mover</button>
+          <button class="btn btn-mode" data-qkind="ftp" id="qTabFtp">📡 Cola FTP</button>
+        </div>
+        <div class="inline-group">
+          <label class="chk-inline"><input type="checkbox" id="chkOnlyPending"> Solo activos</label>
+          <button class="btn btn-sm" id="btnQueueAutoOrder">↕ Auto-ordenar</button>
+          <button class="btn btn-sm" id="btnQueueRetry">↻ Reintentar errores</button>
+          <button class="btn btn-sm btn-ghost" id="btnQueueClearOk">🧹 Limpiar OK</button>
+          <button class="btn btn-sm btn-ghost" id="btnQueueClearErr">🧹 Limpiar ERR</button>
+          <button class="btn btn-sm btn-danger" id="btnQueueClearPend">🗑 Vaciar pendientes</button>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width:55px">#</th>
+              <th style="width:95px">Estado</th>
+              <th style="width:90px">Tipo</th>
+              <th>Origen → Destino</th>
+              <th style="width:100px">Tamaño</th>
+              <th style="width:230px">Controles</th>
+            </tr>
+          </thead>
+          <tbody id="queueTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- TAB: CONFIGURACIÓN -->
+    <section class="tab-panel" id="tab-config">
+      <form id="settingsForm" class="config-grid">
+        <div class="card">
+          <h2>💾 Configuración de Mover / Copiar</h2>
+          <div class="form-grid">
+            <label>Carpeta origen inicial
+              <input type="text" name="mover_origin" id="cfgMoverOrigin">
+            </label>
+            <label>Carpeta destino por defecto
+              <input type="text" name="mover_dest" id="cfgMoverDest">
+            </label>
+            <label>Operación por defecto
+              <select name="mover_operation" id="cfgMoverOp">
+                <option value="copiar">Copiar (mantiene origen)</option>
+                <option value="mover">Mover (borra origen al verificar)</option>
+              </select>
+            </label>
+            <label>Si destino ya existe
+              <select name="mover_conflict" id="cfgMoverConflict">
+                <option value="omitir">Omitir</option>
+                <option value="sobrescribir">Sobrescribir</option>
+                <option value="renombrar">Renombrar: nombre (1).ext</option>
+              </select>
+            </label>
+            <label>Verificación tras copiar
+              <select name="mover_verify" id="cfgMoverVerify">
+                <option value="tamano">Tamaño</option>
+                <option value="checksum">Checksum SHA-256 (lento)</option>
+                <option value="no">No (al mover siempre verifica tamaño)</option>
+              </select>
+            </label>
+            <label>Límite velocidad (KB/s, 0 = sin límite)
+              <input type="number" min="0" name="mover_limit_kbps" id="cfgMoverLimit">
+            </label>
+            <label>Reintentos ante fallo
+              <input type="number" min="0" name="mover_retries" id="cfgMoverRetries">
+            </label>
+            <label>Espera inicial reintento (s)
+              <input type="number" min="1" name="mover_retry_wait" id="cfgMoverRetryWait">
+            </label>
+          </div>
+          <label class="chk-block">
+            <input type="checkbox" name="mover_keep_structure" id="cfgMoverStruct">
+            Mantener estructura de subcarpetas en destino automático
+          </label>
+          <label class="field-full">Carpetas destino favoritas (una ruta por línea)
+            <textarea name="mover_favorites" id="cfgMoverFavs" rows="3" placeholder="/host/mnt/peliculas"></textarea>
+          </label>
+        </div>
+
+        <div class="card">
+          <div class="card-header-row">
+            <h2>📡 Configuración FTP / Nintendo Switch</h2>
+            <div class="inline-group">
+              <button type="button" class="btn btn-sm btn-accent" id="btnScanSwitch">🔍 Buscar Switch</button>
+              <button type="button" class="btn btn-sm" id="btnTestFtp">🔌 Probar conexión</button>
+            </div>
+          </div>
+
+          <div id="switchScanResults" class="scan-results hidden"></div>
+          <div id="ftpTestBanner" class="banner hidden"></div>
+
+          <div class="form-grid">
+            <label>Servidor / IP FTP
+              <input type="text" name="ftp_host" id="cfgFtpHost" placeholder="192.168.1.50">
+            </label>
+            <label>Puerto
+              <input type="number" min="1" max="65535" name="ftp_port" id="cfgFtpPort">
+            </label>
+            <label>Usuario (vacío = anónimo)
+              <input type="text" name="ftp_user" id="cfgFtpUser" autocomplete="off">
+            </label>
+            <label>Contraseña <span class="muted" id="cfgFtpPwHint"></span>
+              <input type="password" name="ftp_password" id="cfgFtpPassword" placeholder="Dejar vacío para mantener" autocomplete="new-password">
+            </label>
+            <label>Carpeta local inicial
+              <input type="text" name="ftp_local_root" id="cfgFtpLocalRoot">
+            </label>
+            <label>Carpeta remota por defecto
+              <input type="text" name="ftp_remote_dir" id="cfgFtpRemoteDir" placeholder="/">
+            </label>
+            <label>Límite subida (KB/s, 0 = sin límite)
+              <input type="number" min="0" name="ftp_limit_kbps" id="cfgFtpLimit">
+            </label>
+            <label>Reintentos ante fallo de red
+              <input type="number" min="0" name="ftp_retries" id="cfgFtpRetries">
+            </label>
+            <label>Espera inicial reintento (s)
+              <input type="number" min="1" name="ftp_retry_wait" id="cfgFtpRetryWait">
+            </label>
+          </div>
+
+          <div class="chk-list">
+            <label class="chk-block"><input type="checkbox" name="ftp_keep_structure" id="cfgFtpStruct"> Mantener estructura de carpetas en servidor</label>
+            <label class="chk-block"><input type="checkbox" name="ftp_passive" id="cfgFtpPassive"> Modo pasivo (recomendado)</label>
+            <label class="chk-block"><input type="checkbox" name="ftp_tls" id="cfgFtpTls"> Usar FTPS / TLS explícito</label>
+            <label class="chk-block"><input type="checkbox" name="ftp_verify_size" id="cfgFtpVerifySize"> Verificar tamaño final en servidor (desactivar para Switch / DBI)</label>
+          </div>
+        </div>
+
+        <div class="config-footer">
+          <button type="submit" class="btn btn-primary">💾 Guardar configuración</button>
+          <span class="muted" id="cfgSaveMsg"></span>
+        </div>
+      </form>
+    </section>
+
+    <!-- TAB: LOGS -->
+    <section class="tab-panel" id="tab-logs">
+      <div class="toolbar">
+        <div class="inline-group">
+          <label>Filtro:
+            <select id="logFilterKind">
+              <option value="todos">Todos</option>
+              <option value="mover">Mover</option>
+              <option value="ftp">FTP</option>
+              <option value="sistema">Sistema</option>
+            </select>
+          </label>
+          <button class="btn btn-sm" id="btnRefreshLogs">↻ Actualizar</button>
+        </div>
+        <button class="btn btn-sm btn-danger" id="btnClearLogs">🗑 Vaciar registro</button>
+      </div>
+      <div class="log-box" id="logBox"></div>
+    </section>
+  </main>
+
+  <!-- MODAL EXPLORADOR DESTINO -->
+  <div class="modal hidden" id="pickerModal">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3 id="pickerTitle">Elegir carpeta destino</h3>
+        <button class="btn btn-sm btn-ghost" id="btnPickerClose">✕</button>
+      </div>
+      <div class="picker-shortcuts" id="pickerShortcuts"></div>
+      <div class="path-nav">
+        <button class="btn btn-sm" id="btnPickerUp">⬆ Subir</button>
+        <input type="text" id="pickerPathInput" class="path-input">
+        <button class="btn btn-sm" id="btnPickerGo">Ir</button>
+      </div>
+      <div class="picker-list" id="pickerList"></div>
+      <div class="modal-foot">
+        <button class="btn btn-primary" id="btnPickerUse">✓ Usar esta carpeta</button>
+        <button class="btn btn-ghost" id="btnPickerCancel">Cancelar</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast hidden" id="toast"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
+

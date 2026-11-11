@@ -1,0 +1,13 @@
+# Ejemplo de configuración de mover.sh
+# Cópialo como mover.conf (cp mover.conf.example mover.conf && chmod 600 mover.conf)
+# y ajusta las rutas, o deja que el asistente lo genere la primera vez que ejecutes ./mover.sh.
+CARPETA_ORIGEN=/ruta/a/origen
+CARPETA_DESTINO=/ruta/a/destino
+ESTRUCTURA=s
+OPERACION=copiar
+LIMITE_KBPS=0
+REINTENTOS=3
+ESPERA_REINTENTO=10
+VERIFICAR=tamano
+CONFLICTO=omitir
+FAVORITOS=( /ruta/a/destino/Peliculas /ruta/a/destino/Series /ruta/a/otro/disco/Copias )

@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validación Bash y ShellCheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in entrypoint.sh scripts/*.sh; do
+            bash -n "$f"
+          done
+          shellcheck -S warning scripts/*.sh
+
+      - name: Compilación y Tests Python
+        run: |
+          python3 -m py_compile app/*.py tests/*.py
+          python3 -m unittest discover -s tests -v
+
