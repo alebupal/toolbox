@@ -788,7 +788,11 @@ $("btnPickerUse").onclick = () => {
 
 // --- INIT ---
 (async function init() {
-  await loadSettings();
+  try {
+    await loadSettings();
+  } catch (err) {
+    showToast(err.message);
+  }
   await loadSrcDir("");
   await loadDstDir();
   await refreshStatus();

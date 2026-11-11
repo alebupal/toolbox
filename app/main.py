@@ -52,6 +52,14 @@ app = FastAPI(title="Toolbox", version="1.0.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
+@app.middleware("http")
+async def _no_cache_static(request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response
+
+
 def _disk_free_bytes(path: str) -> dict[str, int] | None:
     cur = path
     while cur and not os.path.exists(cur):
