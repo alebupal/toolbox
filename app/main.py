@@ -21,12 +21,15 @@ from .db import QueueDB
 from .ftp_worker import list_remote_dirs, test_ftp_connection
 from .models import (
     AddQueueRequest,
+    ChangeDestRequest,
+    DeletePathsRequest,
     MkdirRequest,
     MoveItemRequest,
+    RenameRequest,
     ScanSwitchRequest,
     SettingsUpdateRequest,
 )
-from .mover_worker import file_signature
+from .mover_worker import calculate_dir_size, delete_entries, file_signature, rename_entry
 from .switch_utils import SWITCH_EXTENSIONS, detect_switch_type, scan_switch_ftp, switch_sort_key
 from .worker_manager import WorkerManager
 
@@ -225,6 +228,41 @@ def make_directory(req: MkdirRequest) -> dict[str, str]:
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"No se pudo crear la carpeta: {exc}") from exc
     return {"path": target}
+
+
+@app.post("/api/fs/rename")
+def api_rename_entry(req: RenameRequest) -> dict[str, str]:
+    try:
+        new_path = rename_entry(req.path, req.new_name, get_data_root())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"No se pudo renombrar: {exc}") from exc
+    queue_db.add_log("sistema", "INFO", f"Renombrado: {req.path} -> {new_path}")
+    return {"path": new_path}
+
+
+@app.post("/api/fs/delete")
+def api_delete_entries(req: DeletePathsRequest) -> dict[str, int]:
+    try:
+        deleted = delete_entries(req.paths, get_data_root())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"No se pudo eliminar: {exc}") from exc
+    if deleted:
+        queue_db.add_log("sistema", "INFO", f"Eliminados {deleted} elemento(s) del explorador")
+    return {"deleted": deleted}
+
+
+@app.get("/api/fs/dir-size")
+def api_dir_size(path: str) -> dict[str, Any]:
+    try:
+        return calculate_dir_size(path, get_data_root())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Error calculando tamaño: {exc}") from exc
 
 
 @app.get("/api/settings")
@@ -464,6 +502,17 @@ def delete_queue_item(item_id: int) -> dict[str, bool]:
     if not ok:
         raise HTTPException(status_code=400, detail="No se puede eliminar (puede estar en ejecución)")
     return {"ok": True}
+
+
+@app.post("/api/queue/change-dest")
+def change_queue_dest(req: ChangeDestRequest) -> dict[str, int]:
+    try:
+        updated = queue_db.change_dest_dir(req.item_ids, req.dest_dir, get_data_root())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if updated:
+        queue_db.add_log("sistema", "INFO", f"Destino actualizado a '{req.dest_dir}' en {updated} elemento(s)")
+    return {"updated": updated}
 
 
 @app.post("/api/ftp/test")

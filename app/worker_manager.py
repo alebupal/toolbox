@@ -9,7 +9,7 @@ from typing import Any
 from .config import SettingsStore
 from .db import QueueDB
 from .ftp_worker import process_ftp_item
-from .mover_worker import process_mover_item
+from .mover_worker import evaluate_mover_space, process_mover_item
 
 
 class _QueueRunner:
@@ -161,6 +161,9 @@ class WorkerManager:
             snap["counts"] = counts
             snap["total_items"] = len(items)
             snap["pending_bytes"] = pending_bytes
+            if kind == "mover":
+                default_dest = self.settings.get().get("mover_dest") or ""
+                snap["space_check"] = evaluate_mover_space(items, default_dest)
             res[kind] = snap
         return res
 

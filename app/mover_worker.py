@@ -384,3 +384,130 @@ def process_mover_item(
                 "resume": 1 if os.path.isfile(partial_path) else 0,
                 "retries_done": attempt,
             }
+
+
+PROTECTED_TOP_DIRS = {
+    "proc",
+    "sys",
+    "dev",
+    "run",
+    "boot",
+    "etc",
+    "usr",
+    "var",
+    "lib",
+    "lib64",
+    "bin",
+    "sbin",
+    "root",
+    "home",
+    "mnt",
+    "media",
+}
+
+
+def calculate_dir_size(folder: str, data_root: str) -> dict[str, Any]:
+    from .config import resolve_safe_path
+
+    safe_path = resolve_safe_path(folder, data_root)
+    if os.path.isfile(safe_path):
+        return {"path": safe_path, "size_bytes": os.path.getsize(safe_path), "files_count": 1}
+    if not os.path.isdir(safe_path):
+        raise ValueError(f"No existe la carpeta: {safe_path}")
+
+    total_bytes = 0
+    files_count = 0
+    norm_root = os.path.normpath(data_root)
+    for dirpath, dirnames, filenames in os.walk(safe_path, followlinks=False):
+        if os.path.normpath(dirpath) == norm_root:
+            dirnames[:] = [d for d in dirnames if d not in {"proc", "sys", "dev", "run"}]
+        for fn in filenames:
+            full = os.path.join(dirpath, fn)
+            try:
+                if not os.path.islink(full) and os.path.isfile(full):
+                    total_bytes += os.path.getsize(full)
+                    files_count += 1
+            except OSError:
+                continue
+    return {"path": safe_path, "size_bytes": total_bytes, "files_count": files_count}
+
+
+def rename_entry(path: str, new_name: str, data_root: str) -> str:
+    from .config import resolve_safe_path
+
+    clean_name = new_name.strip().replace("/", "").replace("\\", "")
+    if not clean_name or clean_name in (".", ".."):
+        raise ValueError("Nombre nuevo inválido")
+
+    safe_src = resolve_safe_path(path, data_root)
+    norm_root = os.path.realpath(data_root)
+    if safe_src == norm_root:
+        raise ValueError("No se puede renombrar la raíz de datos")
+    if os.path.dirname(safe_src) == norm_root and os.path.basename(safe_src) in PROTECTED_TOP_DIRS:
+        raise ValueError(f"No se puede renombrar el directorio del sistema {os.path.basename(safe_src)}")
+    if not os.path.exists(safe_src):
+        raise ValueError("El archivo o carpeta origen no existe")
+
+    safe_dst = resolve_safe_path(os.path.join(os.path.dirname(safe_src), clean_name), data_root)
+    if os.path.exists(safe_dst):
+        raise ValueError(f"Ya existe '{clean_name}' en esa carpeta")
+    os.rename(safe_src, safe_dst)
+    return safe_dst
+
+
+def delete_entries(paths: list[str], data_root: str) -> int:
+    from .config import resolve_safe_path
+
+    norm_root = os.path.realpath(data_root)
+    deleted = 0
+    for raw in paths:
+        safe_p = resolve_safe_path(raw, data_root)
+        if safe_p == norm_root:
+            raise ValueError("No se permite borrar la raíz de datos")
+        if os.path.dirname(safe_p) == norm_root and os.path.basename(safe_p) in PROTECTED_TOP_DIRS:
+            raise ValueError(f"Directorio del sistema protegido: {os.path.basename(safe_p)}")
+        if not os.path.lexists(safe_p):
+            continue
+        if os.path.isdir(safe_p) and not os.path.islink(safe_p):
+            shutil.rmtree(safe_p)
+        else:
+            os.unlink(safe_p)
+        deleted += 1
+    return deleted
+
+
+def evaluate_mover_space(items: list[dict[str, Any]], default_dest: str) -> dict[str, Any]:
+    """Calcula el espacio requerido por pendientes en Mover y si supera el espacio libre."""
+    pending = [it for it in items if it.get("status") in ("PEND", "REAN", "PROC")]
+    ref_dest = default_dest
+    needed_bytes = 0
+    for it in pending:
+        dest_dir = os.path.dirname(it.get("dest_path") or "") or default_dest
+        if ref_dest == default_dest and dest_dir:
+            ref_dest = dest_dir
+        # Si es mover dentro del mismo disco/partición, os.replace no consume espacio adicional
+        if it.get("operation") == "mover" and os.path.exists(it.get("source_path", "")) and same_filesystem(
+            it["source_path"], dest_dir
+        ):
+            continue
+        needed_bytes += int(it.get("size_bytes") or 0)
+
+    free_bytes: int | None = None
+    total_bytes: int | None = None
+    if ref_dest:
+        try:
+            st = os.statvfs(_nearest_existing_dir(ref_dest))
+            free_bytes = st.f_bavail * st.f_frsize
+            total_bytes = st.f_blocks * st.f_frsize
+        except OSError:
+            pass
+
+    shortfall = max(0, needed_bytes - free_bytes) if free_bytes is not None else 0
+    return {
+        "dest_path": ref_dest,
+        "free_bytes": free_bytes,
+        "total_bytes": total_bytes,
+        "needed_bytes": needed_bytes,
+        "shortfall_bytes": shortfall,
+        "space_warning": bool(free_bytes is not None and needed_bytes > free_bytes),
+    }

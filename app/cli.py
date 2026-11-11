@@ -101,6 +101,9 @@ class ToolboxClient:
             return self._http("GET", "/api/status")
         db = self._local_db()
         try:
+            from .mover_worker import evaluate_mover_space
+
+            cfg = self._local_settings().get()
             workers = {}
             for kind in ("mover", "ftp"):
                 items = db.list_items(kind=kind)
@@ -111,13 +114,16 @@ class ToolboxClient:
                     counts[st] = counts.get(st, 0) + 1
                     if st in ("PEND", "REAN", "PROC"):
                         pending_bytes += int(it.get("size_bytes") or 0)
-                workers[kind] = {
+                snap: dict[str, Any] = {
                     "running": False,
                     "stopping": False,
                     "progress": {},
                     "counts": counts,
                     "pending_bytes": pending_bytes,
                 }
+                if kind == "mover":
+                    snap["space_check"] = evaluate_mover_space(items, cfg.get("mover_dest") or "")
+                workers[kind] = snap
             return {"workers": workers, "data_root": get_data_root()}
         finally:
             db.close()
@@ -432,6 +438,57 @@ class ToolboxClient:
         ports = [pto, 5000] if pto not in (21, 5000) else [5000, 2121, 21]
         return scan_switch_ftp(ports=ports)
 
+    def dir_size(self, path: str) -> dict[str, Any]:
+        if self.is_web_running():
+            qs = urllib.parse.urlencode({"path": path})
+            return self._http("GET", f"/api/fs/dir-size?{qs}", timeout=60.0)
+        from .mover_worker import calculate_dir_size
+
+        return calculate_dir_size(path, get_data_root())
+
+    def rename_entry(self, path: str, new_name: str) -> str:
+        if self.is_web_running():
+            return self._http("POST", "/api/fs/rename", {"path": path, "new_name": new_name}).get("path", "")
+        from .mover_worker import rename_entry
+
+        new_path = rename_entry(path, new_name, get_data_root())
+        db = self._local_db()
+        try:
+            db.add_log("sistema", "INFO", f"[CLI] Renombrado: {path} -> {new_path}")
+        finally:
+            db.close()
+        return new_path
+
+    def delete_entries(self, paths: list[str]) -> int:
+        if self.is_web_running():
+            return int(self._http("POST", "/api/fs/delete", {"paths": paths}).get("deleted", 0))
+        from .mover_worker import delete_entries
+
+        deleted = delete_entries(paths, get_data_root())
+        if deleted:
+            db = self._local_db()
+            try:
+                db.add_log("sistema", "INFO", f"[CLI] Eliminados {deleted} elemento(s)")
+            finally:
+                db.close()
+        return deleted
+
+    def change_dest_dir(self, item_ids: list[int], dest_dir: str) -> int:
+        if self.is_web_running():
+            return int(
+                self._http("POST", "/api/queue/change-dest", {"item_ids": item_ids, "dest_dir": dest_dir}).get(
+                    "updated", 0
+                )
+            )
+        db = self._local_db()
+        try:
+            updated = db.change_dest_dir(item_ids, dest_dir, get_data_root())
+            if updated:
+                db.add_log("sistema", "INFO", f"[CLI] Destino actualizado a '{dest_dir}' en {updated} elemento(s)")
+            return updated
+        finally:
+            db.close()
+
 
 def _print_status_summary(client: ToolboxClient, kind: str) -> None:
     st = client.get_status()["workers"][kind]
@@ -439,11 +496,23 @@ def _print_status_summary(client: ToolboxClient, kind: str) -> None:
     pend = c.get("PEND", 0) + c.get("REAN", 0) + c.get("PROC", 0)
     state = "DETENIENDO" if st.get("stopping") else ("EN EJECUCIÓN" if st.get("running") else "DETENIDO")
     title = "MOVER / COPIAR" if kind == "mover" else "FTP / SWITCH"
+    sc = st.get("space_check") or {}
+    free_str = (
+        f" | Libre dest: {_fmt_bytes(sc['free_bytes'])}"
+        if (kind == "mover" and sc.get("free_bytes") is not None)
+        else ""
+    )
     print(f"=== {title} (Cola compartida Web + SSH) ===")
     print(
         f"  Estado: {state} | Pendientes: {pend} ({_fmt_bytes(st.get('pending_bytes', 0))}) "
-        f"| Pausados: {c.get('PAUS', 0)} | OK: {c.get('OK', 0)} | ERR: {c.get('ERR', 0)}"
+        f"| Pausados: {c.get('PAUS', 0)} | OK: {c.get('OK', 0)} | ERR: {c.get('ERR', 0)}{free_str}"
     )
+    if kind == "mover" and sc.get("space_warning"):
+        print(
+            f"  ⚠ AVISO ESPACIO: Se requieren {_fmt_bytes(sc.get('needed_bytes', 0))} "
+            f"pero solo quedan {_fmt_bytes(sc.get('free_bytes', 0))} libres en destino "
+            f"(faltan {_fmt_bytes(sc.get('shortfall_bytes', 0))})"
+        )
     prog = st.get("progress") or {}
     if st.get("running") and prog.get("filename"):
         print(
@@ -485,7 +554,11 @@ Uso:
   mover                               Abre el menú interactivo TUI compartido con la Web
   mover [OPCIONES] [RUTAS...]         Añade rutas a la cola compartida
   mover --iniciar | --parar           Arranca o detiene el worker en segundo plano
-  mover --estado | --pendientes       Muestra estado y cola compartida
+  mover --estado | --pendientes       Muestra estado, espacio libre y cola compartida
+  mover --cambiar-destino IDs RUTA    Cambia destino de ítems en cola (ej: 1,2 /host/mnt/pelis)
+  mover --tamano RUTA                 Calcula tamaño total y nº de archivos de una carpeta
+  mover --renombrar RUTA NUEVO_NOMBRE Renombra un archivo o carpeta del servidor
+  mover --borrar [-y] RUTA...         Elimina archivos o carpetas del servidor
   mover --log [N]                     Últimas N líneas del registro compartido (def. 40)
   mover --legacy [...]                Usa el script Bash clásico aislado (/config/cli/mover)
 
@@ -504,6 +577,10 @@ Uso:
   subeftp [OPCIONES] [RUTAS...]       Añade rutas a la cola FTP compartida con la Web
   subeftp --subir | --parar           Arranca o detiene las subidas en segundo plano
   subeftp --estado | --pendientes     Muestra estado y cola FTP compartida
+  subeftp --cambiar-destino IDs RUTA  Cambia carpeta remota en cola (ej: 1,2 /install)
+  subeftp --tamano RUTA               Calcula tamaño total de una carpeta local
+  subeftp --renombrar RUTA NUEVO_NOM  Renombra un archivo o carpeta local
+  subeftp --borrar [-y] RUTA...       Elimina archivos o carpetas locales
   subeftp --probar                    Prueba la conexión FTP configurada
   subeftp --buscar-switch             Escanea la red LAN buscando Nintendo Switch
   subeftp --log [N]                   Últimas N líneas del registro compartido (def. 40)
@@ -551,9 +628,11 @@ def _interactive_explore(client: ToolboxClient, kind: str) -> None:
         print("-" * 76)
         if kind == "mover":
             print("  N / 1,3-5: abrir/añadir | t: todo | r N: carpeta recursiva | o: copiar/mover")
+            print("  tam N: tamaño carpeta | ren N: renombrar | del N[,M-K]: borrar del servidor")
             print("  d: elegir destino local | a: destino automático | /TXT | * | .. | v: volver")
         else:
             print("  N / 1,3-5: abrir/añadir | j: solo juegos Switch | t: todo | r N: carpeta recursiva")
+            print("  tam N: tamaño carpeta | ren N: renombrar | del N[,M-K]: borrar del servidor")
             print("  d: escribir ruta destino FTP | a: destino automático | /TXT | * | .. | v: volver")
 
         cmd = input("  Opción: ").strip()
@@ -574,6 +653,33 @@ def _interactive_explore(client: ToolboxClient, kind: str) -> None:
             continue
         if cmd.lower() == "o" and kind == "mover":
             op = "mover" if op == "copiar" else "copiar"
+            continue
+        if cmd.lower().startswith(("tam ", "s ")):
+            num = cmd.split(None, 1)[1].strip()
+            if num.isdigit() and 1 <= int(num) <= len(entries):
+                _etype, obj = entries[int(num) - 1]
+                info = client.dir_size(obj["path"])
+                print(
+                    f"  -> Tamaño de '{obj['name']}': {_fmt_bytes(info['size_bytes'])} "
+                    f"({info['files_count']} archivo(s))"
+                )
+            continue
+        if cmd.lower().startswith(("ren ", "rn ")):
+            num = cmd.split(None, 1)[1].strip()
+            if num.isdigit() and 1 <= int(num) <= len(entries):
+                _etype, obj = entries[int(num) - 1]
+                new_n = input(f"  Nuevo nombre para '{obj['name']}': ").strip()
+                if new_n and new_n != obj["name"]:
+                    client.rename_entry(obj["path"], new_n)
+                    print(f"  -> Renombrado a '{new_n}'")
+            continue
+        if cmd.lower().startswith(("del ", "rm ")):
+            sel_str = cmd.split(None, 1)[1].strip()
+            idxs = _parse_selection(sel_str, len(entries))
+            targets = [entries[i - 1][1]["path"] for i in idxs]
+            if targets and _ask_yes_no(f"  ¿Eliminar permanentemente {len(targets)} elemento(s)?", False):
+                deleted = client.delete_entries(targets)
+                print(f"  -> Eliminados: {deleted}")
             continue
         if cmd.lower() == "d":
             if kind == "mover":
@@ -639,9 +745,8 @@ def _interactive_queue(client: ToolboxClient, kind: str, only_pending: bool) -> 
         _print_queue_table(shown)
         print("-" * 76)
         print("  t: todos/pendientes | ord: auto-ordenar | /TXT | *: quitar filtro")
-        print("  b N[,M-K]: quitar | p N[,M-K]: pausar/reanudar | sub N | baj N | top N")
-        if kind == "mover":
-            print("  o N[,M-K]: alternar copiar/mover")
+        print("  b N[,M-K]: quitar | p N[,M-K]: pausar/reanudar | d N[,M-K]: cambiar destino")
+        print("  sub N | baj N | top N" + (" | o N[,M-K]: alternar copiar/mover" if kind == "mover" else ""))
         print("  c: limpiar OK | f: limpiar ERR | e: reintentar ERR | x: vaciar pend | v: volver")
 
         cmd = input("  Acción: ").strip()
@@ -674,6 +779,15 @@ def _interactive_queue(client: ToolboxClient, kind: str, only_pending: bool) -> 
         elif low.startswith("o ") and kind == "mover":
             for i in _parse_selection(cmd[2:], len(shown)):
                 client.item_action(shown[i - 1]["id"], "toggle-op")
+        elif low.startswith("d "):
+            idxs = _parse_selection(cmd[2:], len(shown))
+            ids = [shown[i - 1]["id"] for i in idxs]
+            if ids:
+                prompt_lbl = "Nueva carpeta destino local" if kind == "mover" else "Nueva carpeta remota FTP"
+                new_d = input(f"  {prompt_lbl}: ").strip()
+                if new_d:
+                    upd = client.change_dest_dir(ids, new_d)
+                    print(f"  -> Destino actualizado en {upd} elemento(s)")
         elif low.startswith(("sub ", "baj ", "top ")):
             verb, rest = low.split(None, 1)
             dir_map = {"sub": "up", "baj": "down", "top": "top"}
@@ -864,6 +978,46 @@ def run_cli(argv: list[str], client: ToolboxClient | None = None) -> int:
     if first == "--log":
         limit = int(args[1]) if len(args) > 1 and args[1].isdigit() else 40
         _print_logs(cli, kind, limit)
+        return 0
+    if first == "--tamano":
+        if len(args) < 2:
+            print("Uso: --tamano RUTA", file=sys.stderr)
+            return 1
+        target_p = str(Path(args[1]).expanduser().resolve())
+        info = cli.dir_size(target_p)
+        print(f"{info['path']}: {_fmt_bytes(info['size_bytes'])} ({info['files_count']} archivo(s))")
+        return 0
+    if first == "--renombrar":
+        if len(args) < 3:
+            print("Uso: --renombrar RUTA NUEVO_NOMBRE", file=sys.stderr)
+            return 1
+        target_p = str(Path(args[1]).expanduser().resolve())
+        new_p = cli.rename_entry(target_p, args[2])
+        print(f"Renombrado a: {new_p}")
+        return 0
+    if first == "--borrar":
+        rest = args[1:]
+        force = False
+        if rest and rest[0] in ("-y", "--yes"):
+            force = True
+            rest = rest[1:]
+        targets = _resolve_cli_paths(rest)
+        if not targets:
+            print("No se indicaron rutas válidas para borrar.", file=sys.stderr)
+            return 1
+        if not force and sys.stdin.isatty() and not _ask_yes_no(f"¿Eliminar {len(targets)} elemento(s)?", False):
+            return 0
+        deleted = cli.delete_entries(targets)
+        print(f"Eliminados: {deleted}")
+        return 0
+    if first == "--cambiar-destino":
+        if len(args) < 3:
+            print("Uso: --cambiar-destino ID[,ID...] RUTA_DESTINO", file=sys.stderr)
+            return 1
+        ids = [int(x.lstrip("#")) for x in args[1].split(",") if x.lstrip("#").isdigit()]
+        dest_arg = str(Path(args[2]).expanduser().resolve()) if kind == "mover" else args[2]
+        updated = cli.change_dest_dir(ids, dest_arg)
+        print(f"Destino actualizado en {updated} elemento(s).")
         return 0
     if kind == "mover" and first in ("--iniciar", "-i") and len(args) == 1:
         cli.start_queue("mover")

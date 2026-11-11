@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Toolbox · Utilidades</title>
-  <link rel="stylesheet" href="/static/style.css?v=3">
+  <link rel="stylesheet" href="/static/style.css?v=5">
 </head>
 <body>
   <header class="topbar">
@@ -37,6 +37,7 @@
         </div>
       </div>
       <div class="worker-meta" id="moverMeta">Pendientes: 0 · Completados: 0 · Errores: 0</div>
+      <div class="space-alert hidden" id="moverSpaceAlert"></div>
       <div class="progress-wrap hidden" id="moverProgWrap">
         <div class="progress-info">
           <span id="moverProgFile">-</span>
@@ -120,6 +121,7 @@
             <div class="inline-group">
               <button class="btn btn-sm" id="btnSelectAll">☑ Todo</button>
               <button class="btn btn-sm btn-ghost" id="btnSelectNone">Ninguno</button>
+              <button class="btn btn-sm btn-danger" id="btnDeleteSelected" title="Eliminar del servidor los seleccionados">🗑 Borrar</button>
               <span class="muted" id="selectionSummary">0 seleccionados</span>
             </div>
             <div class="inline-group">
@@ -136,8 +138,8 @@
                   <th style="width:34px"><input type="checkbox" id="chkHeaderAll"></th>
                   <th>Nombre</th>
                   <th style="width:95px">Estado</th>
-                  <th style="width:88px">Tamaño</th>
-                  <th style="width:118px">Enviar</th>
+                  <th style="width:105px">Tamaño</th>
+                  <th style="width:185px">Acciones</th>
                 </tr>
               </thead>
               <tbody id="fsTableBody"></tbody>
@@ -162,7 +164,7 @@
             Modo <strong>Destino automático</strong> activado: se usará la ruta por defecto de Configuración (manteniendo o no subcarpetas según tus ajustes). Desmarca la casilla superior para elegir aquí la carpeta exacta.
           </div>
 
-          <div id="dstNavigator">
+          <div id="dstNavigator" class="dst-navigator">
             <div class="bookmarks-bar" id="dstBookmarks"></div>
             <div class="breadcrumbs" id="dstBreadcrumbs"></div>
 
@@ -170,6 +172,7 @@
               <button class="btn btn-sm" id="btnDstUp" title="Subir carpeta">⬆</button>
               <input type="text" id="dstPathInput" class="path-input" aria-label="Ruta destino">
               <button class="btn btn-sm" id="btnDstGo">Ir</button>
+              <input type="search" id="dstFilter" class="filter-input" placeholder="Filtrar...">
             </div>
 
             <div class="dst-target-pill">
@@ -182,7 +185,7 @@
                 <thead>
                   <tr>
                     <th>Contenido en destino</th>
-                    <th style="width:90px">Tamaño</th>
+                    <th style="width:105px">Tamaño</th>
                   </tr>
                 </thead>
                 <tbody id="dstTableBody"></tbody>
@@ -202,6 +205,7 @@
         </div>
         <div class="inline-group">
           <label class="chk-inline"><input type="checkbox" id="chkOnlyPending"> Solo activos</label>
+          <button class="btn btn-sm" id="btnQueueChangeDest">📂 Cambiar destino</button>
           <button class="btn btn-sm" id="btnQueueAutoOrder">↕ Auto-ordenar</button>
           <button class="btn btn-sm" id="btnQueueRetry">↻ Reintentar errores</button>
           <button class="btn btn-sm btn-ghost" id="btnQueueClearOk">🧹 Limpiar OK</button>
@@ -407,6 +411,6 @@
 
   <div class="toast hidden" id="toast"></div>
 
-  <script src="/static/app.js?v=3"></script>
+  <script src="/static/app.js?v=5"></script>
 </body>
 </html>

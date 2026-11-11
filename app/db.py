@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .config import get_config_dir
+from .config import get_config_dir, normalize_remote_path, resolve_safe_path
 
 ACTIVE_STATUSES = ("PEND", "REAN", "PAUS", "PROC")
 PENDING_STATUSES = ("PEND", "REAN")
@@ -386,4 +386,37 @@ class QueueDB:
                 (kind, cleanup_dir),
             ).fetchone()
         return row is not None
+
+    def change_dest_dir(self, item_ids: list[int], new_dest_dir: str, data_root: str) -> int:
+        """Cambia la carpeta destino de los elementos indicados que no estén en PROC ni OK."""
+        if not item_ids:
+            return 0
+        updated = 0
+        now = time.time()
+        with self._lock:
+            for item_id in item_ids:
+                row = self._conn.execute("SELECT * FROM queue_items WHERE id = ?", (item_id,)).fetchone()
+                if not row or row["status"] in ("PROC", "OK"):
+                    continue
+                src = row["source_path"]
+                cleanup_dir = row["cleanup_dir"] or ""
+                if row["kind"] == "mover":
+                    target_base = resolve_safe_path(new_dest_dir, data_root)
+                    if cleanup_dir and src.startswith(cleanup_dir.rstrip("/") + "/"):
+                        folder_name = os.path.basename(cleanup_dir.rstrip("/"))
+                        rel_inside = os.path.relpath(src, cleanup_dir)
+                        new_dest = os.path.join(target_base, folder_name, rel_inside)
+                    else:
+                        new_dest = os.path.join(target_base, os.path.basename(src))
+                else:
+                    target_base = normalize_remote_path(new_dest_dir)
+                    new_dest = normalize_remote_path(f"{target_base}/{os.path.basename(src)}")
+
+                self._conn.execute(
+                    "UPDATE queue_items SET dest_path = ?, updated_at = ? WHERE id = ?",
+                    (new_dest, now, item_id),
+                )
+                updated += 1
+            self._conn.commit()
+        return updated
 

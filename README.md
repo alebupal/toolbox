@@ -139,20 +139,30 @@ En la parte superior aparecen siempre las dos tarjetas de estado (**💾 Cola Mo
 - **Selector de modo superior**: alterna entre **💾 Copiar / Mover local** y **📡 Subir por FTP / Switch**, además de elegir rápidamente la acción (**📋 Copiar** o **✂️ Mover**).
 - **Panel izquierdo (`📂 Origen (Servidor)`)**:
   - Navega con **migas de pan clicables**, botones rápidos (`Raíz servidor`, `Home`, `/mnt`, `/media`), barra de ruta directa y filtro en vivo.
-  - Puedes crear carpetas (`+ Carpeta`), mostrar u ocultar ocultos, y seleccionar múltiples archivos o carpetas.
+  - Puedes crear carpetas (`+ Carpeta`), mostrar u ocultar ocultos, seleccionar múltiples archivos/carpetas y **eliminar seleccionados (`🗑 Borrar`)**.
+  - **Acciones rápidas por fila (1.1)**:
+    - **Tamaño de carpeta bajo demanda (`📏 Ver`)**: calcula el tamaño total y número de archivos de cualquier carpeta sin ralentizar la carga inicial.
+    - **Renombrar (`✏️`)**: cambia el nombre de cualquier archivo o carpeta directamente desde la tabla.
+    - **Eliminar (`🗑`)**: borra un archivo o carpeta con confirmación previa y protección frente al borrado accidental de carpetas críticas del sistema (`/host`, `/host/home`, `/host/etc`, etc.).
   - Botones de envío:
     - **➕ A la cola →**: añade a la cola sin arrancar todavía.
     - **⚡ Enviar e iniciar** (*Copiar ahora* / *Mover ahora* / *Subir ahora*): añade a la cola hacia la carpeta abierta a la derecha y arranca el worker al instante en segundo plano.
     - **🎮 Solo Switch** (en modo FTP): filtra y encola solo `.nsp`, `.nsz`, `.xci`, `.xcz` y `.nro`.
 - **Panel derecho (`🎯 Destino`)**:
-  - Muestra en tiempo real el contenido de la carpeta destino (carpeta local del servidor o carpeta remota FTP con atajos `/`, `/install`, `/nsp`, `/switch`).
-  - Permite navegar, ver el espacio libre en disco, crear nuevas subcarpetas (`+ Carpeta`) y ver claramente el indicador **Destino activo**.
+  - Diseño **simétrico 50/50** alineado fila por fila con el panel izquierdo (marcadores, migas de pan, barra de ruta, filtro en vivo, indicador **Destino activo** y tabla con la misma altura de fila).
+  - Muestra en tiempo real el contenido de la carpeta destino (carpeta local del servidor o carpeta remota FTP con atajos `/`, `/install`, `/nsp`, `/switch`), espacio libre en disco y botón `+ Carpeta`.
   - Si marcas **Usar destino automático (config)**, ignora la carpeta abierta a la derecha y usa la ruta por defecto configurada en *Configuración*.
 
-### 2. 📋 Colas
+### 2. 📋 Colas y Comprobación de Espacio Total
 - Vista independiente para **Cola Mover** y **Cola FTP**, con filtro `Solo activos` (`PEND`, `REAN`, `PAUS`, `PROC`).
-- **Controles por elemento**: subir (`↑`), bajar (`↓`), poner primero (`⤒`), pausar/reanudar (`⏯`), alternar `Copiar ⇄ Mover` (en Mover) y eliminar (`✕`).
-- **Controles globales**: `▶ Iniciar` / `⏹ Detener` (parada limpia dejando el ítem como `REAN` para reanudar exactamente donde quedó), `↕ Auto-ordenar` (en FTP ordena `BASE → UPD → DLC → NRO`), `↻ Reintentar errores`, `🧹 Limpiar OK`, `🧹 Limpiar ERR`, `🗑 Vaciar pendientes`.
+- **Comprobación de espacio libre total antes de empezar (1.3)**:
+  - Calcula automáticamente el tamaño pendiente real de la cola Mover (descontando los archivos en modo `MOVER` dentro del mismo disco/partición, que usan `mv` instantáneo sin ocupar espacio extra) y lo compara con el espacio libre del disco destino.
+  - Muestra siempre en la tarjeta superior el resumen `Libre dest: X GB` y despliega una alerta visual `⚠️ Espacio insuficiente en destino` si la cola pendiente supera el espacio disponible.
+- **Cambiar carpeta destino de elementos ya encolados (1.2)**:
+  - **Por fila (`📂`)**: permite reasignar el destino de cualquier elemento que aún no esté en `PROC` ni `OK` (conservando la estructura de subcarpetas si procede de una carpeta recursiva).
+  - **En lote (`📂 Cambiar destino`)**: cambia la carpeta destino de todos los elementos pendientes/pausados/erróneos de la cola activa de una sola vez.
+- **Controles por elemento**: subir (`↑`), bajar (`↓`), poner primero (`⤒`), pausar/reanudar (`⏯`), cambiar destino (`📂`), alternar `Copiar ⇄ Mover` (en Mover) y eliminar (`✕`).
+- **Controles globales**: `▶ Iniciar` / `⏹ Detener` (parada limpia dejando el ítem como `REAN` para reanudar exactamente donde quedó), `📂 Cambiar destino`, `↕ Auto-ordenar` (en FTP ordena `BASE → UPD → DLC → NRO`), `↻ Reintentar errores`, `🧹 Limpiar OK`, `🧹 Limpiar ERR`, `🗑 Vaciar pendientes`.
 
 ### 3. ⚙️ Configuración
 - **Mover / Copiar**: origen inicial, destino por defecto, operación por defecto, política de conflictos (`omitir`, `sobrescribir`, `renombrar`), verificación (`tamano`, `checksum`, `no`), límite KB/s, reintentos, espera exponencial y rutas favoritas (con botón `📂` selector de carpetas).
@@ -231,7 +241,11 @@ Gestiona colas locales de copia o movimiento con `rsync` (con parciales `.mover-
 | `-d RUTA`, `--destino RUTA`, `--destino=RUTA` | Fija una carpeta destino concreta (si se omite, usa el destino automático configurado). |
 | `-i`, `--iniciar` (o `-s`, `--ahora`) | Si se pasa junto a ficheros/carpetas, los añade y **arranca de inmediato** sin preguntar. Si se pasa solo (`mover --iniciar`), arranca los pendientes en cola. |
 | `--anadir RUTA...` | Explícito para añadir ficheros o carpetas (útil si algún nombre empieza por `-`). También puedes usar `--` antes de las rutas. |
-| `--estado` | Muestra el estado del worker en segundo plano y lista la cola completa. |
+| `--cambiar-destino ID[,ID...] RUTA` | Cambia la carpeta destino de uno o varios IDs ya encolados (o `todos` para todos los pendientes). |
+| `--tamano RUTA` | Calcula el tamaño total y el número de archivos contenidos en una carpeta o archivo. |
+| `--renombrar RUTA NUEVO_NOMBRE` | Renombra un archivo o carpeta del servidor sin moverlo de directorio. |
+| `--borrar [-y] RUTA...` | Elimina archivos o carpetas del servidor (pide confirmación interactiva salvo que se indique `-y` / `--yes`). |
+| `--estado` | Muestra el estado del worker en segundo plano, comprobación de espacio libre total en destino y lista la cola completa. |
 | `--pendientes` | Lista únicamente los archivos pendientes/pausados y estima el tiempo total. |
 | `--parar` | Detiene de forma limpia el worker en segundo plano (el archivo actual queda en `REAN` para reanudar luego). |
 | `--log [N]` | Muestra las últimas `N` líneas del registro `mover.log` (por defecto `40`). |
@@ -273,6 +287,9 @@ Al ejecutar `mover` (o `toolbox` → `1`) aparece el menú principal:
   - `1,3,5-8`: añade varios archivos a la vez por lista o rangos.
   - `t`: añade todos los archivos visibles en la carpeta actual.
   - `r N`: añade recursivamente la carpeta `N` con todas sus subcarpetas.
+  - `tam N`: calcula y muestra el tamaño total y número de archivos de la carpeta `N`.
+  - `ren N`: renombra el archivo o carpeta `N`.
+  - `del N[,M-K]`: elimina del servidor los elementos indicados (con confirmación).
   - `o`: alterna la operación de lo que vas a añadir entre **COPIAR** y **MOVER**.
   - `d`: abre el navegador local para elegir una carpeta destino puntual.
   - `f1`, `f2`...: selecciona directamente una de tus carpetas destino favoritas.
@@ -311,6 +328,10 @@ Gestiona subidas FTP/FTPS con `curl` (reanudación automática `-C -`, límite K
 | `-d RUTA`, `--destino RUTA`, `--destino=RUTA` | Especifica la carpeta remota destino en el servidor FTP (ej: `-d /install`). |
 | `-j`, `--solo-switch` | Al añadir rutas/carpetas por CLI, filtra e incluye únicamente archivos de Switch (`.nsp`, `.nsz`, `.xci`, `.xcz`, `.nro`). |
 | `--anadir RUTA...` | Explícito para añadir archivos o carpetas (o usa `--` antes de las rutas). |
+| `--cambiar-destino ID[,ID...] RUTA` | Cambia la carpeta remota destino de uno o varios IDs ya encolados en FTP (o `todos`). |
+| `--tamano RUTA` | Calcula el tamaño total y número de archivos de una carpeta local. |
+| `--renombrar RUTA NUEVO_NOMBRE` | Renombra un archivo o carpeta local. |
+| `--borrar [-y] RUTA...` | Elimina archivos o carpetas locales (con confirmación o `-y`). |
 | `--estado` | Muestra el estado del worker FTP y la cola de subidas. |
 | `--pendientes` | Lista archivos pendientes y calcula tiempo estimado según la velocidad límite configurada. |
 | `--probar` | Prueba la conexión FTP configurada (si falla, ofrece buscar la Switch en la LAN). |
@@ -356,6 +377,7 @@ Al ejecutar `subeftp` (o `toolbox` → `2`):
   - `j`: añade **solo juegos Switch** (`.nsp`, `.nsz`, `.xci`, `.xcz`, `.nro`) de la vista actual.
   - `t`: añade todos los archivos visibles de la vista actual.
   - `r N`: añade recursivamente la carpeta `N` con sus subcarpetas.
+  - `tam N` / `ren N` / `del N[,M-K]`: calcula tamaño de carpeta (`tam`), renombra (`ren`) o elimina del servidor (`del`).
   - `d`: abre el selector remoto FTP (con atajos `inst` → `/install`, `nsp` → `/nsp`, `sw` → `/switch`, `sd` → `/`, `n NOMBRE` para nueva subcarpeta y `e RUTA` para ruta manual).
   - `/TEXTO` / `*`: filtra por nombre o quita el filtro.
   - `..` / `v`: sube una carpeta o vuelve al menú.

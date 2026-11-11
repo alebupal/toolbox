@@ -9,6 +9,8 @@ const state = {
   srcParent: null,
   srcData: null,
   selectedPaths: new Set(),
+  dirSizes: {},
+  lastQueueItems: [],
 
   dstLocalPath: "",
   dstLocalParent: null,
@@ -17,7 +19,7 @@ const state = {
   dstRemoteData: null,
 
   settings: null,
-  picker: { targetInputId: null, path: "" },
+  picker: { targetInputId: null, path: "", onPick: null },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -140,7 +142,21 @@ function renderWorkerCard(kind, info) {
 
   const c = info.counts || {};
   const pend = (c.PEND || 0) + (c.REAN || 0) + (c.PROC || 0);
-  metaEl.textContent = `Pendientes: ${pend} (${fmtBytes(info.pending_bytes)}) · Pausados: ${c.PAUS || 0} · OK: ${c.OK || 0} · ERR: ${c.ERR || 0}`;
+  const sc = info.space_check;
+  const freeSuffix = (kind === "mover" && sc && sc.free_bytes != null)
+    ? ` · Libre dest: ${fmtBytes(sc.free_bytes)}`
+    : "";
+  metaEl.textContent = `Pendientes: ${pend} (${fmtBytes(info.pending_bytes)}) · Pausados: ${c.PAUS || 0} · OK: ${c.OK || 0} · ERR: ${c.ERR || 0}${freeSuffix}`;
+
+  if (kind === "mover") {
+    const alertEl = $("moverSpaceAlert");
+    if (sc && sc.space_warning) {
+      alertEl.textContent = `⚠️ Espacio insuficiente en destino: se requieren ${fmtBytes(sc.needed_bytes)} y quedan ${fmtBytes(sc.free_bytes)} libres (faltan ${fmtBytes(sc.shortfall_bytes)})`;
+      alertEl.classList.remove("hidden");
+    } else {
+      alertEl.classList.add("hidden");
+    }
+  }
 
   if (info.running && info.progress && info.progress.filename) {
     progWrap.classList.remove("hidden");
@@ -235,6 +251,7 @@ async function loadSrcDir(path) {
     state.srcPath = data.path;
     state.srcParent = data.parent;
     state.selectedPaths.clear();
+    state.dirSizes = {};
     $("srcPathInput").value = data.path;
     $("btnSrcUp").disabled = !data.parent;
     $("srcDiskInfo").textContent = data.disk ? `Libre: ${fmtBytes(data.disk.free_bytes)}` : "";
@@ -274,13 +291,22 @@ function renderSrcTable() {
   const rows = [];
   for (const d of dirs) {
     const checked = state.selectedPaths.has(d.path) ? "checked" : "";
+    const sizeHtml = state.dirSizes[d.path]
+      ? escapeHtml(state.dirSizes[d.path])
+      : `<button type="button" class="btn btn-sm btn-ghost" data-calc-size="${escapeHtml(d.path)}" title="Calcular tamaño de esta carpeta">📏 Ver</button>`;
     rows.push(`
       <tr>
         <td><input type="checkbox" class="fs-chk" data-path="${escapeHtml(d.path)}" ${checked}></td>
         <td><a class="dir-link" data-open="${escapeHtml(d.path)}">📁 ${escapeHtml(d.name)}</a></td>
         <td><span class="tag">DIR</span></td>
-        <td>-</td>
-        <td><button type="button" class="btn btn-sm" data-add-dir="${escapeHtml(d.path)}">+ Carpeta</button></td>
+        <td>${sizeHtml}</td>
+        <td>
+          <div class="row-actions">
+            <button type="button" class="btn btn-sm" data-add-dir="${escapeHtml(d.path)}">+ Carpeta</button>
+            <button type="button" class="btn btn-sm btn-ghost" data-rename="${escapeHtml(d.path)}" data-rname="${escapeHtml(d.name)}" title="Renombrar">✏️</button>
+            <button type="button" class="btn btn-sm btn-danger" data-delete="${escapeHtml(d.path)}" title="Eliminar">🗑</button>
+          </div>
+        </td>
       </tr>
     `);
   }
@@ -294,7 +320,13 @@ function renderSrcTable() {
         <td class="file-name">${escapeHtml(f.name)}</td>
         <td>${swBadge}${stBadge}</td>
         <td>${fmtBytes(f.size_bytes)}</td>
-        <td><button type="button" class="btn btn-sm btn-primary" data-add-file="${escapeHtml(f.path)}">${actionLabel}</button></td>
+        <td>
+          <div class="row-actions">
+            <button type="button" class="btn btn-sm btn-primary" data-add-file="${escapeHtml(f.path)}">${actionLabel}</button>
+            <button type="button" class="btn btn-sm btn-ghost" data-rename="${escapeHtml(f.path)}" data-rname="${escapeHtml(f.name)}" title="Renombrar">✏️</button>
+            <button type="button" class="btn btn-sm btn-danger" data-delete="${escapeHtml(f.path)}" title="Eliminar">🗑</button>
+          </div>
+        </td>
       </tr>
     `);
   }
@@ -309,13 +341,56 @@ function updateSelectionSummary() {
   $("selectionSummary").textContent = `${state.selectedPaths.size} seleccionado(s)`;
 }
 
-$("fsTableBody").addEventListener("click", (e) => {
+$("fsTableBody").addEventListener("click", async (e) => {
   const openEl = e.target.closest("[data-open]");
   if (openEl) return loadSrcDir(openEl.dataset.open);
   const addFileEl = e.target.closest("[data-add-file]");
   if (addFileEl) return enqueuePaths([addFileEl.dataset.addFile], false, false, false);
   const addDirEl = e.target.closest("[data-add-dir]");
   if (addDirEl) return enqueuePaths([addDirEl.dataset.addDir], true, false, false);
+  const sizeEl = e.target.closest("[data-calc-size]");
+  if (sizeEl) {
+    const dirPath = sizeEl.dataset.calcSize;
+    sizeEl.textContent = "⏳...";
+    try {
+      const res = await api(`/api/fs/dir-size?path=${encodeURIComponent(dirPath)}`);
+      state.dirSizes[dirPath] = `${fmtBytes(res.size_bytes)} (${res.files_count})`;
+      renderSrcTable();
+    } catch (err) {
+      showToast(err.message);
+      renderSrcTable();
+    }
+    return;
+  }
+  const renEl = e.target.closest("[data-rename]");
+  if (renEl) {
+    const oldName = renEl.dataset.rname || "";
+    const newName = prompt("Nuevo nombre:", oldName);
+    if (!newName || newName.trim() === oldName) return;
+    try {
+      await api("/api/fs/rename", {
+        method: "POST",
+        body: JSON.stringify({ path: renEl.dataset.rename, new_name: newName.trim() }),
+      });
+      showToast("Renombrado correctamente");
+      loadSrcDir(state.srcPath);
+    } catch (err) {
+      showToast(err.message);
+    }
+    return;
+  }
+  const delEl = e.target.closest("[data-delete]");
+  if (delEl) {
+    const target = delEl.dataset.delete;
+    if (!confirm(`¿Seguro que deseas eliminar permanentemente del servidor:\n${target}?`)) return;
+    try {
+      await api("/api/fs/delete", { method: "POST", body: JSON.stringify({ paths: [target] }) });
+      showToast("Eliminado correctamente");
+      loadSrcDir(state.srcPath);
+    } catch (err) {
+      showToast(err.message);
+    }
+  }
 });
 
 $("fsTableBody").addEventListener("change", (e) => {
@@ -344,6 +419,19 @@ $("btnSelectNone").onclick = () => {
   $("chkHeaderAll").dispatchEvent(new Event("change"));
 };
 
+$("btnDeleteSelected").onclick = async () => {
+  const paths = Array.from(state.selectedPaths);
+  if (!paths.length) return showToast("Selecciona al menos un archivo o carpeta para borrar");
+  if (!confirm(`¿Eliminar permanentemente ${paths.length} elemento(s) seleccionado(s) del servidor?`)) return;
+  try {
+    const res = await api("/api/fs/delete", { method: "POST", body: JSON.stringify({ paths }) });
+    showToast(`Eliminados ${res.deleted} elemento(s)`);
+    loadSrcDir(state.srcPath);
+  } catch (err) {
+    showToast(err.message);
+  }
+};
+
 $("btnSrcUp").onclick = () => { if (state.srcParent) loadSrcDir(state.srcParent); };
 $("btnSrcGo").onclick = () => loadSrcDir($("srcPathInput").value);
 $("srcPathInput").addEventListener("keydown", (e) => { if (e.key === "Enter") loadSrcDir($("srcPathInput").value); });
@@ -363,6 +451,47 @@ $("btnSrcNewDir").onclick = async () => {
 };
 
 // --- PANEL DERECHO (DESTINO) ---
+function renderDstTable() {
+  const q = (($("dstFilter") && $("dstFilter").value) || "").trim().toLowerCase();
+  if (state.exploreMode === "mover") {
+    const data = state.dstLocalData;
+    if (!data) return;
+    const dirs = (data.dirs || []).filter((d) => !q || d.name.toLowerCase().includes(q));
+    const files = (data.files || []).filter((f) => !q || f.name.toLowerCase().includes(q));
+    const rows = [
+      ...dirs.map((d) => `
+        <tr>
+          <td><a class="dir-link" data-dopen="${escapeHtml(d.path)}">📁 ${escapeHtml(d.name)}</a></td>
+          <td class="muted">DIR</td>
+        </tr>
+      `),
+      ...files.map((f) => `
+        <tr>
+          <td class="muted file-name">📄 ${escapeHtml(f.name)}</td>
+          <td class="muted">${fmtBytes(f.size_bytes)}</td>
+        </tr>
+      `),
+    ];
+    $("dstTableBody").innerHTML = rows.length
+      ? rows.join("")
+      : `<tr><td colspan="2" class="muted">Carpeta destino vacía o sin coincidencias.</td></tr>`;
+  } else {
+    const res = state.dstRemoteData;
+    if (!res || !res.ok) return;
+    const base = res.path === "/" ? "" : res.path;
+    const dirs = (res.dirs || []).filter((name) => !q || name.toLowerCase().includes(q));
+    const rows = dirs.map((name) => `
+      <tr>
+        <td><a class="dir-link" data-dopen="${escapeHtml(`${base}/${name}`)}">📁 ${escapeHtml(name)}</a></td>
+        <td class="muted">DIR</td>
+      </tr>
+    `);
+    $("dstTableBody").innerHTML = rows.length
+      ? rows.join("")
+      : `<tr><td colspan="2" class="muted">Sin subcarpetas o sin coincidencias en ${escapeHtml(state.dstRemotePath)}.</td></tr>`;
+  }
+}
+
 async function loadDstDir(pathOverride) {
   if (state.useAutoDest) return;
   if (state.exploreMode === "mover") {
@@ -380,24 +509,7 @@ async function loadDstDir(pathOverride) {
       $("dstDiskInfo").textContent = data.disk ? `Libre: ${fmtBytes(data.disk.free_bytes)}` : "";
       renderBookmarksBar($("dstBookmarks"), data.bookmarks || [], true, (p) => loadDstDir(p));
       renderBreadcrumbs($("dstBreadcrumbs"), data.path, data.data_root, (p) => loadDstDir(p));
-
-      const rows = [
-        ...(data.dirs || []).map((d) => `
-          <tr>
-            <td><a class="dir-link" data-dopen="${escapeHtml(d.path)}">📁 ${escapeHtml(d.name)}</a></td>
-            <td class="muted">DIR</td>
-          </tr>
-        `),
-        ...(data.files || []).map((f) => `
-          <tr>
-            <td class="muted file-name">📄 ${escapeHtml(f.name)}</td>
-            <td class="muted">${fmtBytes(f.size_bytes)}</td>
-          </tr>
-        `),
-      ];
-      $("dstTableBody").innerHTML = rows.length
-        ? rows.join("")
-        : `<tr><td colspan="2" class="muted">Carpeta destino vacía.</td></tr>`;
+      renderDstTable();
     } catch (err) {
       showToast(err.message);
     }
@@ -421,20 +533,12 @@ async function loadDstDir(pathOverride) {
     $("dstTableBody").innerHTML = `<tr><td colspan="2" class="muted">Cargando carpetas FTP...</td></tr>`;
     try {
       const res = await api(`/api/ftp/dirs?path=${encodeURIComponent(state.dstRemotePath)}`);
+      state.dstRemoteData = res;
       if (!res.ok) {
         $("dstTableBody").innerHTML = `<tr><td colspan="2" class="muted">No conectado (${escapeHtml(res.error || "revisa Configuración")}). Puedes escribir la ruta arriba igualmente.</td></tr>`;
         return;
       }
-      const base = res.path === "/" ? "" : res.path;
-      const rows = (res.dirs || []).map((name) => `
-        <tr>
-          <td><a class="dir-link" data-dopen="${escapeHtml(`${base}/${name}`)}">📁 ${escapeHtml(name)}</a></td>
-          <td class="muted">DIR</td>
-        </tr>
-      `);
-      $("dstTableBody").innerHTML = rows.length
-        ? rows.join("")
-        : `<tr><td colspan="2" class="muted">Sin subcarpetas en ${escapeHtml(state.dstRemotePath)}.</td></tr>`;
+      renderDstTable();
     } catch (err) {
       $("dstTableBody").innerHTML = `<tr><td colspan="2" class="muted">${escapeHtml(err.message)}</td></tr>`;
     }
@@ -457,6 +561,7 @@ $("btnDstUp").onclick = () => {
 };
 $("btnDstGo").onclick = () => loadDstDir($("dstPathInput").value.trim());
 $("dstPathInput").addEventListener("keydown", (e) => { if (e.key === "Enter") loadDstDir($("dstPathInput").value.trim()); });
+$("dstFilter").addEventListener("input", renderDstTable);
 $("btnDstRefresh").onclick = () => loadDstDir();
 
 $("btnDstNewDir").onclick = async () => {
@@ -528,11 +633,16 @@ $("chkOnlyPending").onchange = () => loadQueue();
 async function loadQueue() {
   const only = $("chkOnlyPending").checked ? "true" : "false";
   const data = await api(`/api/queue?kind=${state.queueTab}&only_pending=${only}`);
-  const rows = (data.items || []).map((it, idx) => {
+  state.lastQueueItems = data.items || [];
+  const rows = state.lastQueueItems.map((it, idx) => {
     const isProc = it.status === "PROC";
+    const canEdit = !isProc && it.status !== "OK";
     const sw = it.switch_type ? `<span class="tag tag-${it.switch_type.toLowerCase()}">${it.switch_type}</span> ` : "";
-    const opBtn = it.kind === "mover" && !isProc
+    const opBtn = it.kind === "mover" && canEdit
       ? `<button type="button" class="btn btn-sm" data-qop="${it.id}" title="Alternar copiar/mover">⇄</button>`
+      : "";
+    const destBtn = canEdit
+      ? `<button type="button" class="btn btn-sm" data-qdest="${it.id}" title="Cambiar carpeta destino">📂</button>`
       : "";
     return `
       <tr>
@@ -553,6 +663,7 @@ async function loadQueue() {
             <button type="button" class="btn btn-sm" data-qmove="${it.id}:down" ${isProc ? "disabled" : ""} title="Bajar">↓</button>
             <button type="button" class="btn btn-sm" data-qpause="${it.id}" ${isProc ? "disabled" : ""} title="Pausar/Reanudar">⏯</button>
             ${opBtn}
+            ${destBtn}
             <button type="button" class="btn btn-sm btn-danger" data-qdel="${it.id}" ${isProc ? "disabled" : ""} title="Quitar">✕</button>
           </div>
         </td>
@@ -562,6 +673,34 @@ async function loadQueue() {
   $("queueTableBody").innerHTML = rows.length
     ? rows.join("")
     : `<tr><td colspan="6" class="muted">No hay elementos en la cola de ${state.queueTab}.</td></tr>`;
+}
+
+async function applyQueueDestChange(itemIds, newDestDir) {
+  try {
+    const res = await api("/api/queue/change-dest", {
+      method: "POST",
+      body: JSON.stringify({ item_ids: itemIds, dest_dir: newDestDir }),
+    });
+    showToast(`Destino cambiado en ${res.updated} elemento(s)`);
+    loadQueue();
+    refreshStatus();
+  } catch (err) {
+    showToast(err.message);
+  }
+}
+
+function promptChangeQueueDest(itemIds) {
+  if (!itemIds.length) return showToast("No hay elementos editables en la cola");
+  if (state.queueTab === "mover") {
+    const initPath = state.dstLocalPath || (state.settings && state.settings.mover_dest) || "";
+    openPicker(null, initPath, (pickedPath) => applyQueueDestChange(itemIds, pickedPath));
+  } else {
+    const currentRemote = state.dstRemotePath || (state.settings && state.settings.ftp_remote_dir) || "/";
+    const nextRemote = prompt("Nueva carpeta remota destino FTP:", currentRemote);
+    if (nextRemote && nextRemote.trim()) {
+      applyQueueDestChange(itemIds, nextRemote.trim());
+    }
+  }
 }
 
 $("queueTableBody").addEventListener("click", async (e) => {
@@ -581,6 +720,10 @@ $("queueTableBody").addEventListener("click", async (e) => {
     await api(`/api/queue/item/${opBtn.dataset.qop}/toggle-op`, { method: "POST" });
     return loadQueue();
   }
+  const destBtn = e.target.closest("[data-qdest]");
+  if (destBtn) {
+    return promptChangeQueueDest([Number(destBtn.dataset.qdest)]);
+  }
   const delBtn = e.target.closest("[data-qdel]");
   if (delBtn) {
     await api(`/api/queue/item/${delBtn.dataset.qdel}`, { method: "DELETE" });
@@ -588,6 +731,13 @@ $("queueTableBody").addEventListener("click", async (e) => {
     refreshStatus();
   }
 });
+
+$("btnQueueChangeDest").onclick = () => {
+  const editableIds = (state.lastQueueItems || [])
+    .filter((it) => it.status !== "PROC" && it.status !== "OK")
+    .map((it) => it.id);
+  promptChangeQueueDest(editableIds);
+};
 
 $("btnQueueAutoOrder").onclick = async () => { await api(`/api/queue/${state.queueTab}/auto-order`, { method: "POST" }); loadQueue(); };
 $("btnQueueRetry").onclick = async () => { await api(`/api/queue/${state.queueTab}/retry-errors`, { method: "POST" }); loadQueue(); };
@@ -930,8 +1080,9 @@ document.querySelectorAll("[data-browse-input]").forEach((btn) => {
   };
 });
 
-async function openPicker(targetInputId, initialPath) {
+async function openPicker(targetInputId, initialPath, onPick = null) {
   state.picker.targetInputId = targetInputId;
+  state.picker.onPick = onPick;
   $("pickerModal").classList.remove("hidden");
   $("pickerTitle").textContent = "Elegir carpeta del servidor";
   await loadPickerDir(initialPath);
@@ -971,7 +1122,10 @@ $("btnPickerNewDir").onclick = async () => {
   }
 };
 $("btnPickerUse").onclick = () => {
-  if (state.picker.targetInputId) {
+  if (state.picker.onPick) {
+    state.picker.onPick(state.picker.path);
+    state.picker.onPick = null;
+  } else if (state.picker.targetInputId) {
     $(state.picker.targetInputId).value = state.picker.path;
   }
   $("pickerModal").classList.add("hidden");

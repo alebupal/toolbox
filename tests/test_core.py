@@ -287,6 +287,123 @@ class CoreTests(unittest.TestCase):
         self.assertIn("Cola compartida Web + SSH", proc.stdout)
         self.assertIn("peli.mkv", proc.stdout)
 
+    def test_explorer_actions_change_dest_and_space_check(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+        from unittest import mock
+        from app.cli import ToolboxClient, run_cli
+        from app.mover_worker import (
+            calculate_dir_size,
+            delete_entries,
+            evaluate_mover_space,
+            rename_entry,
+        )
+
+        # 1.1 Acciones rápidas: calcular tamaño, renombrar y eliminar (con protección de sistema)
+        folder = os.path.join(self.data_root, "album")
+        sub = os.path.join(folder, "cd1")
+        os.makedirs(sub, exist_ok=True)
+        f1 = os.path.join(sub, "pista1.mp3")
+        f2 = os.path.join(sub, "pista2.mp3")
+        Path(f1).write_bytes(b"a" * 1024)
+        Path(f2).write_bytes(b"b" * 2048)
+
+        sz = calculate_dir_size(folder, self.data_root)
+        self.assertEqual(sz["size_bytes"], 3072)
+        self.assertEqual(sz["files_count"], 2)
+
+        renamed_path = rename_entry(f2, "pista2_renombrada.mp3", self.data_root)
+        self.assertTrue(os.path.exists(renamed_path))
+        self.assertFalse(os.path.exists(f2))
+
+        # No permitir borrar carpetas críticas del sistema ni data_root
+        with self.assertRaises(ValueError):
+            delete_entries([self.data_root], self.data_root)
+        sys_etc = os.path.join(self.data_root, "etc")
+        os.makedirs(sys_etc, exist_ok=True)
+        with self.assertRaises(ValueError):
+            delete_entries([sys_etc], self.data_root)
+
+        # 1.2 Cambiar destino preservando subcarpetas cuando cleanup_dir está definido
+        dst_a = os.path.join(self.data_root, "dest_a")
+        dst_b = os.path.join(self.data_root, "dest_b")
+        os.makedirs(dst_a, exist_ok=True)
+        os.makedirs(dst_b, exist_ok=True)
+
+        db = QueueDB(os.path.join(self.cfg_dir, "queue.db"))
+        added = db.add_items(
+            [
+                {
+                    "kind": "mover",
+                    "operation": "copiar",
+                    "source_path": f1,
+                    "dest_path": os.path.join(dst_a, "album", "cd1", "pista1.mp3"),
+                    "size_bytes": 1024,
+                    "cleanup_dir": folder,
+                }
+            ]
+        )
+        item_id = added[0]["id"]
+        changed = db.change_dest_dir([item_id], dst_b, data_root=self.data_root)
+        self.assertEqual(changed, 1)
+        updated_item = db.get_item(item_id)
+        self.assertEqual(
+            updated_item["dest_path"],
+            os.path.join(dst_b, "album", "cd1", "pista1.mp3"),
+        )
+
+        # 1.3 Comprobación de espacio libre total antes de empezar
+        items = db.list_items("mover")
+        db.close()
+        sp_ok = evaluate_mover_space(items, dst_b)
+        self.assertFalse(sp_ok["space_warning"])
+        self.assertEqual(sp_ok["needed_bytes"], 1024)
+
+        # Simular falta de espacio en destino
+        fake_statvfs = mock.Mock(f_bavail=10, f_blocks=100, f_frsize=10)
+        with mock.patch("os.statvfs", return_value=fake_statvfs):
+            sp_warn = evaluate_mover_space(items, dst_b)
+            self.assertTrue(sp_warn["space_warning"])
+            self.assertEqual(sp_warn["shortfall_bytes"], 924)
+
+        # Probar equivalentes por CLI (--tamano, --renombrar, --cambiar-destino, --borrar -y)
+        client = ToolboxClient(base_url="http://127.0.0.1:9")
+        client._web_ok = False
+        dst_c = os.path.join(self.data_root, "dest_c")
+        os.makedirs(dst_c, exist_ok=True)
+
+        with mock.patch.dict(os.environ, {"CONFIG_DIR": self.cfg_dir, "DATA_ROOT": self.data_root}), mock.patch(
+            "sys.stdin.isatty", return_value=False
+        ):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                self.assertEqual(run_cli(["mover", "--tamano", folder], client=client), 0)
+            self.assertIn("2 archivo(s)", buf.getvalue())
+
+            self.assertEqual(
+                run_cli(["mover", "--renombrar", renamed_path, "pista2_final.mp3"], client=client),
+                0,
+            )
+            final_f2 = os.path.join(sub, "pista2_final.mp3")
+            self.assertTrue(os.path.exists(final_f2))
+
+            self.assertEqual(
+                run_cli(["mover", "--cambiar-destino", str(item_id), dst_c], client=client),
+                0,
+            )
+            cli_db = QueueDB(os.path.join(self.cfg_dir, "queue.db"))
+            self.assertEqual(
+                cli_db.get_item(item_id)["dest_path"],
+                os.path.join(dst_c, "album", "cd1", "pista1.mp3"),
+            )
+            cli_db.close()
+
+            self.assertEqual(
+                run_cli(["mover", "--borrar", "-y", final_f2], client=client),
+                0,
+            )
+            self.assertFalse(os.path.exists(final_f2))
+
 
 if __name__ == "__main__":
     unittest.main()

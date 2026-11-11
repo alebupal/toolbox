@@ -12,6 +12,20 @@ class MkdirRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
 
 
+class RenameRequest(BaseModel):
+    path: str
+    new_name: str = Field(..., min_length=1, max_length=255)
+
+
+class DeletePathsRequest(BaseModel):
+    paths: list[str] = Field(..., min_length=1)
+
+
+class ChangeDestRequest(BaseModel):
+    item_ids: list[int] = Field(..., min_length=1)
+    dest_dir: str = Field(..., min_length=1)
+
+
 class AddQueueRequest(BaseModel):
     kind: Literal["mover", "ftp"]
     paths: list[str] = Field(..., min_length=1)
