@@ -2,9 +2,10 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#171d27">
   <title>Toolbox · Utilidades</title>
-  <link rel="stylesheet" href="/static/style.css?v=5">
+  <link rel="stylesheet" href="/static/style.css?v=6">
 </head>
 <body>
   <header class="topbar">
@@ -93,9 +94,18 @@
         </div>
       </div>
 
-      <div class="dual-panes">
+      <div class="mobile-pane-switch" id="mobilePaneSwitch">
+        <button type="button" class="btn btn-mode active" data-mpane="src" id="mPaneBtnSrc">
+          📂 Origen <span class="badge-pill" id="mPaneSrcCount">0</span>
+        </button>
+        <button type="button" class="btn btn-mode" data-mpane="dst" id="mPaneBtnDst">
+          🎯 Destino: <span class="mpane-dst-path" id="mPaneDstLabel">-</span>
+        </button>
+      </div>
+
+      <div class="dual-panes" id="dualPanes" data-mobile-pane="src">
         <!-- PANEL IZQUIERDO: ORIGEN -->
-        <div class="pane">
+        <div class="pane" id="srcPane">
           <div class="pane-head">
             <div>
               <span class="pane-title">📂 Origen (Servidor)</span>
@@ -117,7 +127,7 @@
             <input type="search" id="fsFilter" class="filter-input" placeholder="Filtrar...">
           </div>
 
-          <div class="batch-bar">
+          <div class="batch-bar" id="srcBatchBar">
             <div class="inline-group">
               <button class="btn btn-sm" id="btnSelectAll">☑ Todo</button>
               <button class="btn btn-sm btn-ghost" id="btnSelectNone">Ninguno</button>
@@ -132,7 +142,7 @@
           </div>
 
           <div class="table-wrap pane-table">
-            <table class="data-table">
+            <table class="data-table fs-table">
               <thead>
                 <tr>
                   <th style="width:34px"><input type="checkbox" id="chkHeaderAll"></th>
@@ -148,7 +158,7 @@
         </div>
 
         <!-- PANEL DERECHO: DESTINO -->
-        <div class="pane">
+        <div class="pane" id="dstPane">
           <div class="pane-head">
             <div>
               <span class="pane-title" id="dstPaneTitle">🎯 Destino (Carpeta donde se guardará)</span>
@@ -215,7 +225,7 @@
       </div>
 
       <div class="table-wrap">
-        <table class="data-table">
+        <table class="data-table queue-table">
           <thead>
             <tr>
               <th style="width:55px">#</th>
@@ -411,6 +421,6 @@
 
   <div class="toast hidden" id="toast"></div>
 
-  <script src="/static/app.js?v=5"></script>
+  <script src="/static/app.js?v=6"></script>
 </body>
 </html>

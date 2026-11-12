@@ -201,6 +201,16 @@ input[type="text"], input[type="number"], input[type="password"], input[type="se
 }
 
 /* DOBLE PANEL EXPLORADOR */
+.mobile-pane-switch {
+  display: none;
+}
+
+.mpane-dst-path {
+  font-family: monospace;
+  font-size: 11.5px;
+  opacity: 0.92;
+}
+
 .dual-panes {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -208,9 +218,43 @@ input[type="text"], input[type="number"], input[type="password"], input[type="se
   align-items: start;
 }
 
-@media (max-width: 1020px) {
+@media (max-width: 960px) {
+  .mobile-pane-switch {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 6px;
+  }
+  .mobile-pane-switch .btn {
+    width: 100%;
+    justify-content: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: 9px 10px;
+    font-weight: 600;
+  }
   .dual-panes {
     grid-template-columns: 1fr;
+  }
+  #dualPanes[data-mobile-pane="src"] #dstPane {
+    display: none;
+  }
+  #dualPanes[data-mobile-pane="dst"] #srcPane {
+    display: none;
+  }
+  .batch-bar.has-selection {
+    position: sticky;
+    bottom: 8px;
+    z-index: 25;
+    background: var(--surface-2);
+    border: 1px solid var(--primary);
+    border-radius: 9px;
+    padding: 8px 10px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
   }
 }
 
@@ -384,7 +428,7 @@ input[type="text"], input[type="number"], input[type="password"], input[type="se
 
 .config-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
   gap: 14px;
 }
 
@@ -637,4 +681,250 @@ input[type="text"], input[type="number"], input[type="password"], input[type="se
   background: var(--surface-2);
   color: #cbd5e1;
   font-weight: 600;
+}
+
+/* ADAPTACIÓN MÓVIL Y PANTALLAS TÁCTILES */
+@media (max-width: 680px) {
+  .topbar {
+    padding: 10px 12px;
+    gap: 8px;
+  }
+  .brand-icon {
+    font-size: 24px;
+  }
+  .brand h1 {
+    font-size: 16px;
+  }
+  .subtitle {
+    display: none;
+  }
+  .tabs {
+    width: 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    gap: 6px;
+    padding-bottom: 2px;
+  }
+  .tabs::-webkit-scrollbar {
+    display: none;
+  }
+  .tab {
+    flex: 0 0 auto;
+    padding: 7px 11px;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+
+  .status-strip {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 8px 10px 0;
+  }
+  .worker-card {
+    padding: 9px 12px;
+  }
+  .container {
+    padding: 10px 10px 32px;
+  }
+
+  .toolbar {
+    padding: 8px 10px;
+    gap: 8px;
+  }
+  .mode-switch {
+    width: 100%;
+  }
+  .mode-switch .btn {
+    flex: 1 1 0;
+    text-align: center;
+    padding: 8px 8px;
+  }
+
+  /* Evitar auto-zoom en iOS/Android al enfocar campos */
+  input[type="text"],
+  input[type="number"],
+  input[type="password"],
+  input[type="search"],
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  .pane {
+    padding: 10px;
+  }
+  .bookmarks-bar,
+  .breadcrumbs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .bookmarks-bar::-webkit-scrollbar,
+  .breadcrumbs::-webkit-scrollbar {
+    display: none;
+  }
+  .crumb {
+    white-space: nowrap;
+  }
+
+  .path-nav {
+    gap: 5px;
+  }
+  .path-input {
+    flex: 1 1 140px;
+  }
+  .filter-input {
+    flex: 1 1 100%;
+  }
+
+  .pane-table {
+    max-height: 62vh;
+  }
+
+  /* Tabla del Explorador convertida en filas táctiles de 2 líneas */
+  .fs-table thead {
+    display: none;
+  }
+  .fs-table tbody tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 8px;
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .fs-table tbody td {
+    border-bottom: none;
+    height: auto !important;
+    padding: 0;
+  }
+  .fs-table .col-chk input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+  }
+  .fs-table .col-name {
+    flex: 1 1 55%;
+    min-width: 130px;
+    font-size: 14px;
+  }
+  .fs-table .col-status,
+  .fs-table .col-size {
+    flex: 0 0 auto;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .fs-table .col-actions {
+    flex: 1 1 100%;
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 2px;
+  }
+  .fs-table .row-actions .btn-sm {
+    padding: 6px 10px;
+    font-size: 12.5px;
+  }
+
+  /* Tabla de Colas convertida en tarjetas limpias */
+  .queue-table thead {
+    display: none;
+  }
+  .queue-table tbody tr.queue-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .queue-table tbody tr.queue-row td {
+    border-bottom: none;
+    height: auto !important;
+    padding: 0;
+  }
+  .queue-table .qcol-idx {
+    font-weight: 600;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .queue-table .qcol-size {
+    margin-left: auto;
+    font-weight: 600;
+    font-size: 12px;
+    color: #cbd5e1;
+  }
+  .queue-table .qcol-paths {
+    flex: 1 1 100%;
+    order: 2;
+    padding: 4px 0 2px;
+  }
+  .queue-table .qcol-actions {
+    flex: 1 1 100%;
+    order: 3;
+  }
+  .queue-table .qcol-actions .inline-group {
+    width: 100%;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+  .queue-table .qcol-actions .btn-sm {
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+
+  /* Configuración y formularios */
+  .card {
+    padding: 12px;
+  }
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+  .config-footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .config-footer .btn {
+    width: 100%;
+    padding: 10px;
+    font-size: 14px;
+  }
+
+  /* Guía / README */
+  .readme-card {
+    padding: 14px 12px;
+  }
+  .readme-body h1 {
+    font-size: 20px;
+  }
+  .readme-body h2 {
+    font-size: 17px;
+  }
+
+  /* Modal selector como hoja inferior (Bottom Sheet) */
+  .modal {
+    align-items: flex-end;
+    padding: 0;
+  }
+  .modal-card {
+    width: 100%;
+    max-height: 90dvh;
+    border-radius: 14px 14px 0 0;
+    padding: 14px 12px calc(14px + env(safe-area-inset-bottom, 0px));
+  }
+  .picker-row {
+    padding: 11px 12px;
+  }
+  .modal-foot .btn {
+    flex: 1 1 0;
+    padding: 10px;
+  }
+
+  .toast {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    text-align: center;
+  }
 }

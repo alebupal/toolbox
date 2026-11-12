@@ -233,10 +233,34 @@ $("modeBtnFtp").onclick = () => setExploreMode("ftp");
 $("opBtnCopiar").onclick = () => setMoverOp("copiar");
 $("opBtnMover").onclick = () => setMoverOp("mover");
 
+function setMobilePane(pane) {
+  $("dualPanes").dataset.mobilePane = pane;
+  $("mPaneBtnSrc").classList.toggle("active", pane === "src");
+  $("mPaneBtnDst").classList.toggle("active", pane === "dst");
+}
+
+function updateMobileDstLabel() {
+  if (state.useAutoDest) {
+    $("mPaneDstLabel").textContent = "Auto (config)";
+    return;
+  }
+  const raw = state.exploreMode === "mover" ? (state.dstLocalPath || "-") : (state.dstRemotePath || "/");
+  if (!raw || raw === "/" || raw === "-") {
+    $("mPaneDstLabel").textContent = raw || "-";
+    return;
+  }
+  const parts = raw.split("/").filter(Boolean);
+  $("mPaneDstLabel").textContent = parts.length > 2 ? `…/${parts.slice(-2).join("/")}` : raw;
+}
+
+$("mPaneBtnSrc").onclick = () => setMobilePane("src");
+$("mPaneBtnDst").onclick = () => setMobilePane("dst");
+
 $("chkAutoDest").onchange = (e) => {
   state.useAutoDest = e.target.checked;
   $("dstAutoNotice").classList.toggle("hidden", !state.useAutoDest);
   $("dstNavigator").classList.toggle("hidden", state.useAutoDest);
+  updateMobileDstLabel();
   if (!state.useAutoDest) loadDstDir();
 };
 
@@ -296,11 +320,11 @@ function renderSrcTable() {
       : `<button type="button" class="btn btn-sm btn-ghost" data-calc-size="${escapeHtml(d.path)}" title="Calcular tamaño de esta carpeta">📏 Ver</button>`;
     rows.push(`
       <tr>
-        <td><input type="checkbox" class="fs-chk" data-path="${escapeHtml(d.path)}" ${checked}></td>
-        <td><a class="dir-link" data-open="${escapeHtml(d.path)}">📁 ${escapeHtml(d.name)}</a></td>
-        <td><span class="tag">DIR</span></td>
-        <td>${sizeHtml}</td>
-        <td>
+        <td class="col-chk"><input type="checkbox" class="fs-chk" data-path="${escapeHtml(d.path)}" ${checked}></td>
+        <td class="col-name"><a class="dir-link" data-open="${escapeHtml(d.path)}">📁 ${escapeHtml(d.name)}</a></td>
+        <td class="col-status"><span class="tag">DIR</span></td>
+        <td class="col-size">${sizeHtml}</td>
+        <td class="col-actions">
           <div class="row-actions">
             <button type="button" class="btn btn-sm" data-add-dir="${escapeHtml(d.path)}">+ Carpeta</button>
             <button type="button" class="btn btn-sm btn-ghost" data-rename="${escapeHtml(d.path)}" data-rname="${escapeHtml(d.name)}" title="Renombrar">✏️</button>
@@ -316,11 +340,11 @@ function renderSrcTable() {
     const stBadge = f.queue_status ? `<span class="tag tag-${f.queue_status.toLowerCase()}">${f.queue_status}</span>` : "";
     rows.push(`
       <tr>
-        <td><input type="checkbox" class="fs-chk" data-path="${escapeHtml(f.path)}" ${checked}></td>
-        <td class="file-name">${escapeHtml(f.name)}</td>
-        <td>${swBadge}${stBadge}</td>
-        <td>${fmtBytes(f.size_bytes)}</td>
-        <td>
+        <td class="col-chk"><input type="checkbox" class="fs-chk" data-path="${escapeHtml(f.path)}" ${checked}></td>
+        <td class="col-name file-name">${escapeHtml(f.name)}</td>
+        <td class="col-status">${swBadge}${stBadge}</td>
+        <td class="col-size">${fmtBytes(f.size_bytes)}</td>
+        <td class="col-actions">
           <div class="row-actions">
             <button type="button" class="btn btn-sm btn-primary" data-add-file="${escapeHtml(f.path)}">${actionLabel}</button>
             <button type="button" class="btn btn-sm btn-ghost" data-rename="${escapeHtml(f.path)}" data-rname="${escapeHtml(f.name)}" title="Renombrar">✏️</button>
@@ -338,7 +362,10 @@ function renderSrcTable() {
 }
 
 function updateSelectionSummary() {
-  $("selectionSummary").textContent = `${state.selectedPaths.size} seleccionado(s)`;
+  const count = state.selectedPaths.size;
+  $("selectionSummary").textContent = `${count} seleccionado(s)`;
+  $("mPaneSrcCount").textContent = count;
+  $("srcBatchBar").classList.toggle("has-selection", count > 0);
 }
 
 $("fsTableBody").addEventListener("click", async (e) => {
@@ -505,6 +532,7 @@ async function loadDstDir(pathOverride) {
       state.dstLocalParent = data.parent;
       $("dstPathInput").value = data.path;
       $("dstActiveLabel").textContent = data.path;
+      updateMobileDstLabel();
       $("btnDstUp").disabled = !data.parent;
       $("dstDiskInfo").textContent = data.disk ? `Libre: ${fmtBytes(data.disk.free_bytes)}` : "";
       renderBookmarksBar($("dstBookmarks"), data.bookmarks || [], true, (p) => loadDstDir(p));
@@ -518,6 +546,7 @@ async function loadDstDir(pathOverride) {
     state.dstRemotePath = target || "/";
     $("dstPathInput").value = state.dstRemotePath;
     $("dstActiveLabel").textContent = state.dstRemotePath;
+    updateMobileDstLabel();
     $("dstDiskInfo").textContent = "";
     $("btnDstUp").disabled = state.dstRemotePath === "/";
 
@@ -645,18 +674,18 @@ async function loadQueue() {
       ? `<button type="button" class="btn btn-sm" data-qdest="${it.id}" title="Cambiar carpeta destino">📂</button>`
       : "";
     return `
-      <tr>
-        <td>${idx + 1}</td>
-        <td><span class="tag tag-${it.status.toLowerCase()}">${it.status}</span></td>
-        <td>${sw}<span class="tag">${escapeHtml(it.operation.toUpperCase())}</span></td>
-        <td class="path-cell">
+      <tr class="queue-row">
+        <td class="qcol-idx">#${idx + 1}</td>
+        <td class="qcol-status"><span class="tag tag-${it.status.toLowerCase()}">${it.status}</span></td>
+        <td class="qcol-type">${sw}<span class="tag">${escapeHtml(it.operation.toUpperCase())}</span></td>
+        <td class="path-cell qcol-paths">
           <div>${escapeHtml(it.source_path)}</div>
           <div class="muted">→ ${escapeHtml(it.dest_path)}</div>
           ${it.note ? `<span class="sub-note">${escapeHtml(it.note)}</span>` : ""}
           ${it.error ? `<span class="sub-err">${escapeHtml(it.error)}</span>` : ""}
         </td>
-        <td>${fmtBytes(it.size_bytes)}</td>
-        <td>
+        <td class="qcol-size">${fmtBytes(it.size_bytes)}</td>
+        <td class="qcol-actions">
           <div class="inline-group">
             <button type="button" class="btn btn-sm" data-qmove="${it.id}:top" ${isProc ? "disabled" : ""} title="Al principio">⤒</button>
             <button type="button" class="btn btn-sm" data-qmove="${it.id}:up" ${isProc ? "disabled" : ""} title="Subir">↑</button>

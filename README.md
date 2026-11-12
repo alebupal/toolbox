@@ -174,6 +174,11 @@ En la parte superior aparecen siempre las dos tarjetas de estado (**💾 Cola Mo
 ### 5. 📖 Guía / README
 - Renderiza este mismo `README.md` directamente dentro de la interfaz web, con índice clicable y botones **Copiar** en cada bloque de comandos.
 
+### 📱 Diseño adaptado a Móvil (Responsive Touch UI)
+- **Conmutador rápido `📂 Origen ⇄ 🎯 Destino`** en pantallas móviles (`<= 960px`): alterna con un toque entre el panel Origen (con contador de seleccionados) y el panel Destino (mostrando siempre la ruta activa) sin tener que hacer scroll vertical entre dos tablas.
+- **Barra de selección flotante inferior (*Sticky Action Bar*)**: al marcar uno o más archivos en móvil, la barra con `➕ A la cola →`, `⚡ Ahora` y `🗑 Borrar` se fija en la parte inferior de la pantalla.
+- **Filas táctiles y tarjetas en Colas (`<= 680px`)**: las tablas del explorador y de colas se transforman automáticamente en filas/tarjetas de dos niveles sin scroll horizontal, con controles táctiles grandes, selector de carpetas tipo *Bottom Sheet* e inputs a `16px` para evitar el auto-zoom del navegador móvil.
+
 ---
 
 ## 💻 Guía detallada de comandos SSH / CLI
