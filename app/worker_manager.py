@@ -65,6 +65,27 @@ class _QueueRunner:
         with self._lock:
             self._progress = data
 
+    def _process_item(self, item: dict[str, Any]) -> dict[str, Any]:
+        """Procesa un elemento con el motor de su cola y devuelve su resultado."""
+        cfg = self.settings.get()
+        if self.kind == "mover":
+            return process_mover_item(
+                item=item,
+                settings=cfg,
+                progress_cb=self._on_progress,
+                stop_event=self._stop_event,
+                log_cb=self.db.add_log,
+                has_pending_cleanup_cb=lambda d: self.db.has_pending_cleanup("mover", d),
+            )
+        else:
+            return process_ftp_item(
+                item=item,
+                settings=cfg,
+                progress_cb=self._on_progress,
+                stop_event=self._stop_event,
+                log_cb=self.db.add_log,
+            )
+
     def _run_loop(self) -> None:
         try:
             while not self._stop_event.is_set():
@@ -84,24 +105,15 @@ class _QueueRunner:
                         "eta": "--",
                     }
 
-                cfg = self.settings.get()
-                if self.kind == "mover":
-                    result = process_mover_item(
-                        item=item,
-                        settings=cfg,
-                        progress_cb=self._on_progress,
-                        stop_event=self._stop_event,
-                        log_cb=self.db.add_log,
-                        has_pending_cleanup_cb=lambda d: self.db.has_pending_cleanup("mover", d),
-                    )
-                else:
-                    result = process_ftp_item(
-                        item=item,
-                        settings=cfg,
-                        progress_cb=self._on_progress,
-                        stop_event=self._stop_event,
-                        log_cb=self.db.add_log,
-                    )
+                try:
+                    result = self._process_item(item)
+                except Exception as exc:
+                    # Un fallo inesperado en un elemento no debe dejarlo en PROC ni parar la cola:
+                    # se marca ERR (reintentable con 'e') y se continúa con el siguiente.
+                    msg = f"{type(exc).__name__}: {exc}"
+                    name = item["source_path"].rsplit("/", 1)[-1]
+                    self.db.add_log(self.kind, "ERROR", f"Error inesperado procesando {name}: {msg}")
+                    result = {"status": "ERR", "error": f"Error inesperado: {msg}", "resume": item.get("resume", 0)}
 
                 update_fields: dict[str, Any] = {
                     "status": result.get("status", "ERR"),
@@ -117,7 +129,7 @@ class _QueueRunner:
                 self.db.update_item(item["id"], **update_fields)
                 with self._lock:
                     self._progress = {}
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:  # pragma: no cover - fallos de la propia cola (p. ej. SQLite)
             self.db.add_log(self.kind, "ERROR", f"Excepción inesperada en worker {self.kind}: {exc}")
         finally:
             with self._lock:

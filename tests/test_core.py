@@ -9,6 +9,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from app.config import SettingsStore, normalize_remote_path, resolve_safe_path
 from app.db import QueueDB
@@ -189,6 +190,51 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(os.path.isfile(dst))
         self.assertEqual(db.list_items("mover")[0]["status"], "OK")
         db.close()
+
+    def test_worker_exception_marks_err_and_queue_continues(self) -> None:
+        """Una excepción inesperada en un elemento lo marca ERR y la cola sigue con el siguiente."""
+        for kind, target in (("mover", "process_mover_item"), ("ftp", "process_ftp_item")):
+            with self.subTest(kind=kind):
+                db = QueueDB(os.path.join(self.cfg_dir, f"queue_{kind}.db"))
+                store = SettingsStore(config_dir=self.cfg_dir, data_root=self.data_root)
+                mgr = WorkerManager(db, store)
+                db.add_items(
+                    [
+                        {
+                            "kind": kind,
+                            "operation": "copiar",
+                            "source_path": os.path.join(self.data_root, f"{kind}_{n}.bin"),
+                            "dest_path": f"/destino/{kind}_{n}.bin",
+                            "size_bytes": 1,
+                        }
+                        for n in (1, 2)
+                    ]
+                )
+                calls: list[str] = []
+
+                def fake_process(item, **_kwargs):
+                    calls.append(item["source_path"])
+                    if len(calls) == 1:
+                        raise PermissionError("sin permiso")
+                    return {"status": "OK"}
+
+                with mock.patch(f"app.worker_manager.{target}", side_effect=fake_process):
+                    self.assertTrue(mgr.start(kind))
+                    runner = mgr.runners[kind]
+                    if runner._thread:
+                        runner._thread.join(timeout=5)
+                    self.assertFalse(runner.is_running())
+
+                first, second = db.list_items(kind)
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(first["status"], "ERR")
+                self.assertIn("PermissionError: sin permiso", first["error"])
+                self.assertEqual(second["status"], "OK")
+                logs = [entry["message"] for entry in db.get_logs(kind)]
+                self.assertTrue(any("Error inesperado procesando" in m for m in logs))
+                # El elemento fallido se puede reintentar (ya no está bloqueado en PROC)
+                self.assertEqual(db.retry_errors(kind), 1)
+                db.close()
 
     def test_scan_switch_ftp_reads_banner(self) -> None:
         srv = socket.socket()
