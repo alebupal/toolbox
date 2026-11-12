@@ -1,0 +1,17 @@
+# Ejemplo de configuración de subeftp.sh (modo --legacy o fuera de Docker)
+# Cópialo como subeftp.conf (cp subeftp.conf.example subeftp.conf && chmod 600 subeftp.conf)
+# y ajusta los valores, o deja que el asistente lo genere la primera vez que ejecutes ./subeftp.sh.
+# Contendrá la contraseña FTP: no lo subas al repositorio (ya está en .gitignore).
+SERVIDOR=192.168.1.50
+PUERTO=5000
+USUARIO=
+PASSWORD=
+LIMITE_KBPS=500
+CARPETA_LOCAL=/ruta/a/juegos
+CARPETA_REMOTA=/install
+ESTRUCTURA=s
+TLS=n
+PASIVO=s
+REINTENTOS=3
+ESPERA_REINTENTO=10
+VERIFICAR_TAMANO=s

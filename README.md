@@ -35,8 +35,13 @@ toolbox/
 ├── entrypoint.sh               # Prepara /config (/config/cli/*) y arranca Uvicorn
 ├── requirements.txt            # FastAPI, Uvicorn y Pydantic
 ├── README.md                   # Esta guía (accesible también desde la pestaña Web y 'toolbox readme')
+├── .github/workflows/
+│   ├── ci.yml                  # bash -n, shellcheck, py_compile y tests unitarios en cada push/PR a main
+│   └── docker-publish.yml      # Construye y publica alebupal/toolbox:latest (amd64 + arm64)
 ├── app/
+│   ├── __init__.py
 │   ├── main.py                 # API REST, explorador /host, endpoint /api/readme y estáticos
+│   ├── cli.py                  # CLI unificado (mover/subeftp en Docker): habla con la API o, si no responde, con SQLite
 │   ├── models.py               # Esquemas Pydantic
 │   ├── config.py               # settings.json (permisos 600) y validación de rutas
 │   ├── db.py                   # Persistencia SQLite (queue.db) de colas y logs
@@ -52,7 +57,8 @@ toolbox/
 │   ├── toolbox.sh              # Wrapper CLI unificado (disponible como 'toolbox' en el contenedor)
 │   ├── mover.sh                # Script Bash completo de copia/movimiento (disponible como 'mover')
 │   ├── subeftp.sh              # Script Bash completo de subida FTP/Switch (disponible como 'subeftp')
-│   └── mover.conf.example      # Plantilla de configuración CLI para mover.sh
+│   ├── mover.conf.example      # Plantilla de configuración CLI para mover.sh (modo --legacy)
+│   └── subeftp.conf.example    # Plantilla de configuración CLI para subeftp.sh (modo --legacy)
 └── tests/
     └── test_core.py            # Suite de tests unitarios (unittest)
 ```
@@ -101,7 +107,7 @@ http://<IP-de-tu-servidor>:8090
   docker build -t alebupal/toolbox:latest .
   docker push alebupal/toolbox:latest
   ```
-- **Automática (GitHub Actions):** el workflow `.github/workflows/docker-publish.yml` construye y sube `alebupal/toolbox:latest` (`linux/amd64` y `linux/arm64`) en cada `push` a `main` usando los secrets del repositorio `DOCKERHUB_USERNAME` y `DOCKERHUB_TOKEN`.
+- **Automática (GitHub Actions):** el workflow `.github/workflows/docker-publish.yml` construye y sube `alebupal/toolbox:latest` (`linux/amd64` y `linux/arm64`) en cada `push` a `main` usando los secrets del repositorio `DOCKERHUB_USERNAME` y `DOCKERHUB_TOKEN`. Por separado, `.github/workflows/ci.yml` valida cada `push`/PR a `main` (ver [Desarrollo y Tests](#-desarrollo-y-tests)).
 
 ### Cómo funciona el acceso a todo el servidor
 
@@ -120,10 +126,15 @@ http://<IP-de-tu-servidor>:8090
 | `DATA_ROOT` | `/host` | Raíz permitida dentro del contenedor para explorar archivos desde la Web. |
 | `PUID` / `PGID` | `0` / `0` | Usuario con el que corre el proceso. `0:0` (`root`) permite operar en todo el servidor; puedes usar `1000:1000` para limitarlo a tu usuario. |
 | `TZ` | `Europe/Madrid` | Zona horaria para fechas en los registros. |
+| `CONFIG_DIR` | `/config` | Carpeta donde se guardan `settings.json` y `queue.db`. |
+| `MOVER_DATA_DIR` | `/config/cli/mover` | Estado y configuración de `mover --legacy`. |
+| `SUBEFTP_DATA_DIR` | `/config/cli/ftp` | Estado y configuración de `subeftp --legacy`. |
+| `MOVER_FORZAR_RSYNC` | *(vacío)* | `1` = usa `rsync` aunque origen y destino estén en el mismo disco (útil para pruebas). |
+| `TOOLBOX_UNIFIED` | *(vacío)* | `1` = fuerza el modo unificado Web + SSH al ejecutar los scripts fuera del contenedor. |
 
 ### Modo de red (`--network host`)
 
-1. **Auto-descubrimiento de Nintendo Switch en LAN**: permite inspeccionar las interfaces físicas (`eth*`, `en*`, `wl*`) y escanear su subred `/24`.
+1. **Auto-descubrimiento de Nintendo Switch en LAN**: permite inspeccionar las interfaces activas del servidor (todas salvo `lo`, `docker*`, `br-*`, `veth*`, `virbr*`, `tun*`, `tap*`, `wg*` y `tailscale*`) y escanear su subred `/24`.
 2. **Modo FTP activo** además del pasivo sin conflictos de puertos dinámicos de datos.
 
 ---
@@ -189,6 +200,7 @@ Todos los scripts están instalados dentro del contenedor como comandos globales
 > - **Dentro del contenedor Docker (`docker exec -it toolbox ...`)**: `toolbox`, `mover` y `subeftp` se conectan automáticamente al mismo motor Web (`/config/queue.db` + `/config/settings.json`). Todo lo que añadas, inicies, pauses, reordenes o configures por **SSH** aparece al instante en la **Web** y viceversa.
 > - **Rutas en Docker**: el disco del servidor está montado en `/host`, así que debes pasar rutas `/host/...` (ej. `/host/mnt/peliculas`).
 > - **Modo clásico aislado (`--legacy` o fuera de Docker)**: si ejecutas `./scripts/mover.sh` o `./scripts/subeftp.sh` en otro servidor Linux sin contenedor, o si pasas el flag `--legacy` dentro del contenedor, usan sus ficheros independientes clásicos (`cola.txt` en `/config/cli/...`).
+> - **Funciones marcadas *(solo --legacy)***: en las tablas y menús de abajo, lo marcado así solo existe en los scripts Bash clásicos (`--legacy` o fuera de Docker); el modo unificado por defecto dentro del contenedor no lo incluye.
 
 ---
 
@@ -246,14 +258,14 @@ Gestiona colas locales de copia o movimiento con `rsync` (con parciales `.mover-
 | `-d RUTA`, `--destino RUTA`, `--destino=RUTA` | Fija una carpeta destino concreta (si se omite, usa el destino automático configurado). |
 | `-i`, `--iniciar` (o `-s`, `--ahora`) | Si se pasa junto a ficheros/carpetas, los añade y **arranca de inmediato** sin preguntar. Si se pasa solo (`mover --iniciar`), arranca los pendientes en cola. |
 | `--anadir RUTA...` | Explícito para añadir ficheros o carpetas (útil si algún nombre empieza por `-`). También puedes usar `--` antes de las rutas. |
-| `--cambiar-destino ID[,ID...] RUTA` | Cambia la carpeta destino de uno o varios IDs ya encolados (o `todos` para todos los pendientes). |
+| `--cambiar-destino ID[,ID...] RUTA` | Cambia la carpeta destino de uno o varios IDs ya encolados. |
 | `--tamano RUTA` | Calcula el tamaño total y el número de archivos contenidos en una carpeta o archivo. |
 | `--renombrar RUTA NUEVO_NOMBRE` | Renombra un archivo o carpeta del servidor sin moverlo de directorio. |
 | `--borrar [-y] RUTA...` | Elimina archivos o carpetas del servidor (pide confirmación interactiva salvo que se indique `-y` / `--yes`). |
 | `--estado` | Muestra el estado del worker en segundo plano, comprobación de espacio libre total en destino y lista la cola completa. |
-| `--pendientes` | Lista únicamente los archivos pendientes/pausados y estima el tiempo total. |
+| `--pendientes` | Lista únicamente los archivos pendientes/pausados (la estimación del tiempo total es *(solo --legacy)*). |
 | `--parar` | Detiene de forma limpia el worker en segundo plano (el archivo actual queda en `REAN` para reanudar luego). |
-| `--log [N]` | Muestra las últimas `N` líneas del registro `mover.log` (por defecto `40`). |
+| `--log [N]` | Muestra los últimos `N` eventos del registro compartido Web + SSH (por defecto `40`). Con `--legacy` lee `mover.log`. |
 | `-h`, `--help`, `help` | Muestra la ayuda integrada del script y sale. |
 
 #### Ejemplos de uso rápido por SSH
@@ -297,18 +309,18 @@ Al ejecutar `mover` (o `toolbox` → `1`) aparece el menú principal:
   - `del N[,M-K]`: elimina del servidor los elementos indicados (con confirmación).
   - `o`: alterna la operación de lo que vas a añadir entre **COPIAR** y **MOVER**.
   - `d`: abre el navegador local para elegir una carpeta destino puntual.
-  - `f1`, `f2`...: selecciona directamente una de tus carpetas destino favoritas.
+  - `f1`, `f2`...: selecciona directamente una de tus carpetas destino favoritas *(solo --legacy)*.
   - `a`: vuelve a usar el destino automático configurado.
   - `/TEXTO` / `*`: filtra por nombre (`/texto`) o limpia el filtro (`*`).
   - `..` / `v`: sube a la carpeta superior (`..`) o vuelve al menú (`v`).
 
 - **Comandos dentro de Gestión de Cola (opción `2` o `3`)**:
-  - Puedes referirte a elementos por **número de fila** (`1`, `2`, `3-6`) o por **ID** precedido de `#` (`#105`).
+  - Puedes referirte a elementos por **número de fila** (`1`, `2`, `3-6`) o por **ID** precedido de `#` (`#105`) *(el uso de `#ID` es solo --legacy)*.
   - `t`: alterna entre ver **TODOS** o **SOLO PENDIENTES**.
   - `ord`: ordena la cola automáticamente por estado y ruta de origen.
   - `/TEXTO` / `*` o `/`: filtra por nombre, ID, estado u operación (ej: `/mover`, `/err`), o quita el filtro.
   - `b N[,M-K]`: elimina elementos de la cola.
-  - `sub N` / `baj N` / `top N` / `m N POS`: reordena prioridades (subir 1 posición, bajar 1, poner primero o mover a la fila `POS`).
+  - `sub N` / `baj N` / `top N` / `m N POS`: reordena prioridades (subir 1 posición, bajar 1, poner primero o mover a la fila `POS`; `m N POS` es *(solo --legacy)*).
   - `p N[,M-K]`: pausa o reanuda elementos pendientes.
   - `o N[,M-K]`: alterna entre **COPIAR** y **MOVER** en elementos aún no terminados.
   - `d N[,M-K]`: cambia la carpeta destino de esos elementos.
@@ -333,16 +345,16 @@ Gestiona subidas FTP/FTPS con `curl` (reanudación automática `-C -`, límite K
 | `-d RUTA`, `--destino RUTA`, `--destino=RUTA` | Especifica la carpeta remota destino en el servidor FTP (ej: `-d /install`). |
 | `-j`, `--solo-switch` | Al añadir rutas/carpetas por CLI, filtra e incluye únicamente archivos de Switch (`.nsp`, `.nsz`, `.xci`, `.xcz`, `.nro`). |
 | `--anadir RUTA...` | Explícito para añadir archivos o carpetas (o usa `--` antes de las rutas). |
-| `--cambiar-destino ID[,ID...] RUTA` | Cambia la carpeta remota destino de uno o varios IDs ya encolados en FTP (o `todos`). |
+| `--cambiar-destino ID[,ID...] RUTA` | Cambia la carpeta remota destino de uno o varios IDs ya encolados en FTP. |
 | `--tamano RUTA` | Calcula el tamaño total y número de archivos de una carpeta local. |
 | `--renombrar RUTA NUEVO_NOMBRE` | Renombra un archivo o carpeta local. |
 | `--borrar [-y] RUTA...` | Elimina archivos o carpetas locales (con confirmación o `-y`). |
 | `--estado` | Muestra el estado del worker FTP y la cola de subidas. |
-| `--pendientes` | Lista archivos pendientes y calcula tiempo estimado según la velocidad límite configurada. |
-| `--probar` | Prueba la conexión FTP configurada (si falla, ofrece buscar la Switch en la LAN). |
+| `--pendientes` | Lista archivos pendientes (el tiempo estimado según la velocidad límite es *(solo --legacy)*). |
+| `--probar` | Prueba la conexión FTP configurada (ofrecer buscar la Switch en la LAN si falla es *(solo --legacy)*). |
 | `--buscar-switch` | Escanea las subredes LAN buscando una Nintendo Switch con servidor FTP activo y permite guardar su IP/puerto. |
 | `--parar` | Detiene de forma limpia la subida en segundo plano (mata `curl` dejando el archivo listo para reanudar con `-C -`). |
-| `--log [N]` | Muestra las últimas `N` líneas del registro `subeftp.log` (por defecto `40`). |
+| `--log [N]` | Muestra los últimos `N` eventos del registro compartido Web + SSH (por defecto `40`). Con `--legacy` lee `subeftp.log`. |
 | `-h`, `--help`, `help` | Muestra la ayuda integrada y sale. |
 
 #### Ejemplos de uso rápido por SSH
@@ -369,7 +381,7 @@ Al ejecutar `subeftp` (o `toolbox` → `2`):
   - `2`: **Ver / gestionar la cola**
   - `3` (o `p`): **Ver solo archivos pendientes**
   - `4`: **Ver progreso en vivo**
-  - `5` (o `s`): **▶ Iniciar / ⏹ Detener subida en 2º plano** (también detecta y limpia un `curl` huérfano si existiera)
+  - `5` (o `s`): **▶ Iniciar / ⏹ Detener subida en 2º plano** (detectar y limpiar un `curl` huérfano es *(solo --legacy)*)
   - `6`: **Probar conexión FTP**
   - `7` (o `b`): **Buscar IP de Switch en la red**
   - `8`: **Editar configuración FTP**
@@ -391,11 +403,11 @@ Al ejecutar `subeftp` (o `toolbox` → `2`):
   - `t`: alterna entre **TODOS** o **SOLO PENDIENTES**.
   - `ord`: **auto-ordena juegos Switch** agrupando por juego y ordenando `Juego Base ➔ Update ➔ DLC` (`[BASE]`, `[UPD]`, `[DLC]`, `[NRO]`).
   - `/TEXTO` / `*` o `/`: busca por nombre, ID o estado (ej: `/mario`, `/pend`).
-  - `b N[,M-K]`, `sub N`, `baj N`, `top N`, `m N POS`, `p N[,M-K]`, `d N[,M-K]`, `c`, `f`, `e`, `x`: idénticos a `mover` (para reordenar, pausar, cambiar carpeta remota, limpiar o reintentar).
+  - `b N[,M-K]`, `sub N`, `baj N`, `top N`, `m N POS` *(solo --legacy)*, `p N[,M-K]`, `d N[,M-K]`, `c`, `f`, `e`, `x`: idénticos a `mover` (para reordenar, pausar, cambiar carpeta remota, limpiar o reintentar).
 
 - **Insignias y estados en `subeftp`**:
   - Switch: `[BASE]` (ID terminando en `000`), `[UPD]` (`800` / `vXXXX`), `[DLC]`, `[NRO]`.
-  - Estados: `PEND`, `REAN`, `PAUS`, `SUB` (subiendo actualmente), `OK`, `ERR`.
+  - Estados: `PEND`, `REAN`, `PAUS`, `PROC` (subiendo actualmente; en *--legacy* se muestra como `SUB`), `OK`, `ERR`.
 
 ---
 
@@ -432,6 +444,8 @@ Al usar `--network host`, puedes exponer la web de forma segura tras HTTPS con N
 1. En **Nginx Proxy Manager**, crea un Proxy Host apuntando a `http://<IP-del-servidor>:8090` (activa **Websockets Support**).
 2. En la pestaña **Advanced**, pega el bloque de `tinyauth` documentado en el repositorio `docker` (`docker/README.md`).
 
+> ⚠️ **La web no tiene login propio.** Con `--network host`, Uvicorn escucha en `0.0.0.0:8090`, es decir, en todas las interfaces del servidor, y el contenedor tiene acceso de `root` a todo `/` (montado en `/host`). Tinyauth solo protege el acceso por el dominio publicado en NPM: cualquiera en la LAN o en la VPN puede entrar directamente por `http://<IP>:8090` y crear, renombrar o borrar archivos. Cierra el puerto `8090` en el firewall (o limita su origen) y accede siempre a través de NPM.
+
 ---
 
 ## 💾 Persistencia y copias de seguridad
@@ -461,3 +475,5 @@ python3 -m py_compile app/*.py tests/*.py
 python3 -m unittest discover -s tests -v
 node --check static/app.js
 ```
+
+La CI (`.github/workflows/ci.yml`) ejecuta en cada `push`/PR a `main` el `bash -n`, `shellcheck -S warning scripts/*.sh`, `py_compile` y los tests unitarios; **no** ejecuta `node --check`, así que conviene lanzarlo en local al tocar `static/app.js`.
