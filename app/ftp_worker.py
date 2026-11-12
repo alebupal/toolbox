@@ -11,10 +11,21 @@ import time
 import urllib.parse
 from typing import Any, Callable
 
+from .config import normalize_remote_path
+
 ProgressCallback = Callable[[dict[str, Any]], None]
 
 # Códigos de curl que no se arreglan reintentando (login fallido, acceso denegado, etc.)
 NON_RETRYABLE_CURL_CODES = {9, 67, 69, 78}
+
+
+def _fmt_size(num: float) -> str:
+    val = float(num)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if val < 1024 or unit == "TB":
+            return f"{val:.0f} {unit}" if unit == "B" else f"{val:.1f} {unit}"
+        val /= 1024
+    return f"{val:.1f} TB"
 
 
 def build_ftp_url(host: str, port: int, remote_path: str, tls: bool = False) -> str:
@@ -173,6 +184,67 @@ def get_remote_file_size(settings: dict[str, Any], remote_path: str) -> int | No
             pass
 
 
+# Comandos que algunos servidores FTP usan para informar del espacio libre, por orden de preferencia.
+# La mayoría de servidores de la Switch (ftpd, sys-ftpd, DBI) no implementan ninguno: en ese caso
+# get_remote_free_space devuelve supported=False sin error.
+FREE_SPACE_COMMANDS = ("AVBL {dir}", "AVBL", "SITE FREE", "SITE DF")
+_FREE_BYTES_RE = re.compile(r"\b(\d{4,})\b")
+
+
+def _parse_free_bytes(reply: str) -> int | None:
+    """Extrae el primer número grande (bytes) de una respuesta 2xx tipo '213 123456789'."""
+    body = reply.split(" ", 1)[1] if " " in reply else reply
+    m = _FREE_BYTES_RE.search(body)
+    return int(m.group(1)) if m else None
+
+
+def get_remote_free_space(settings: dict[str, Any], timeout: float = 8.0) -> dict[str, Any]:
+    """Consulta el espacio libre del servidor FTP (p. ej. la SD de la Switch).
+
+    Devuelve {supported, free_bytes, method, error?}. Nunca lanza excepción.
+    """
+    import ftplib
+
+    host = (settings.get("ftp_host") or "").strip()
+    port = int(settings.get("ftp_port") or 5000)
+    if not host:
+        return {"supported": False, "free_bytes": None, "method": "", "error": "Servidor FTP no configurado"}
+    user = settings.get("ftp_user") or "anonymous"
+    password = settings.get("ftp_password") or ("anonymous@local" if user == "anonymous" else "")
+    remote_dir = normalize_remote_path(settings.get("ftp_remote_dir") or "/")
+    ftp: ftplib.FTP | None = None
+    try:
+        ftp = ftplib.FTP_TLS(timeout=timeout) if settings.get("ftp_tls") else ftplib.FTP(timeout=timeout)
+        ftp.connect(host, port)
+        ftp.login(user, password)
+        if isinstance(ftp, ftplib.FTP_TLS):
+            ftp.prot_p()
+        for template in FREE_SPACE_COMMANDS:
+            cmd = template.format(dir=remote_dir)
+            try:
+                reply = ftp.sendcmd(cmd)
+            except ftplib.error_perm:
+                continue
+            except ftplib.Error:
+                continue
+            if reply[:1] == "2":
+                free = _parse_free_bytes(reply)
+                if free is not None:
+                    return {"supported": True, "free_bytes": free, "method": cmd.split()[0] if cmd.startswith("AVBL") else cmd}
+        return {"supported": False, "free_bytes": None, "method": ""}
+    except (OSError, EOFError, ftplib.Error) as exc:
+        return {"supported": False, "free_bytes": None, "method": "", "error": f"No se pudo consultar el espacio: {exc}"}
+    finally:
+        if ftp is not None:
+            try:
+                ftp.quit()
+            except Exception:
+                try:
+                    ftp.close()
+                except Exception:
+                    pass
+
+
 def _parse_curl_progress_line(line: str) -> dict[str, Any] | None:
     # Columnas estándar de curl:
     # % Total  % Received  % Xferd  Average Dload  Upload  Total  Spent  Left  Speed
@@ -203,15 +275,21 @@ def process_ftp_item(
     progress_cb: ProgressCallback,
     stop_event: threading.Event,
     log_cb: Callable[[str, str, str], None],
+    free_space_cb: Callable[[], int | None] | None = None,
 ) -> dict[str, Any]:
-    """Sube un fichero por FTP/FTPS usando curl."""
+    """Sube un fichero por FTP/FTPS usando curl.
+
+    `free_space_cb` (opcional) devuelve los bytes libres en el servidor o None si no se sabe; si el
+    fichero no cabe, el elemento termina en ERR sin intentar la subida.
+    """
     src = item["source_path"]
     remote_dest = item["dest_path"]
     host = (settings.get("ftp_host") or "").strip()
     port = int(settings.get("ftp_port") or 5000)
     limit_kbps = int(settings.get("ftp_limit_kbps") or 0)
-    max_retries = int(settings.get("ftp_retries") or 3)
-    base_wait = int(settings.get("ftp_retry_wait") or 10)
+    # `or` convertiría un 0 explícito (sin reintentos / sin espera) en el valor por defecto
+    max_retries = int(settings.get("ftp_retries", 3))
+    base_wait = int(settings.get("ftp_retry_wait", 10))
     verify_size = bool(settings.get("ftp_verify_size", False))
 
     if not host:
@@ -237,6 +315,16 @@ def process_ftp_item(
             return {"status": "OK", "note": "omitido (ya existía en servidor)", "error": "", "resume": 0}
 
         use_append = can_resume and remote_size is not None and 0 < remote_size < local_size
+
+        if free_space_cb is not None and attempt == 0:
+            free_bytes = free_space_cb()
+            needed = local_size - (remote_size if use_append and remote_size else 0)
+            if free_bytes is not None and free_bytes < needed:
+                msg = (
+                    f"Espacio insuficiente en la SD (libre {_fmt_size(free_bytes)}, necesita {_fmt_size(needed)})"
+                )
+                log_cb("ftp", "ERROR", f"{msg}: {os.path.basename(src)}")
+                return {"status": "ERR", "error": msg, "note": "", "resume": 1 if use_append else 0}
 
         cfg_path = _write_curl_auth_file(settings)
         cmd = ["curl", "-S", *_base_curl_opts(settings, cfg_path), "--ftp-create-dirs"]

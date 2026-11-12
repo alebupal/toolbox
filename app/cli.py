@@ -12,8 +12,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from .config import SettingsStore, get_data_root, normalize_remote_path, resolve_safe_path
+from .config import SettingsStore, effective_trash_days, get_data_root, normalize_remote_path, resolve_safe_path
 from .db import QueueDB
+from .services import decorate_queue_items, plan_game_upload, search_files
+from .services import list_directory as list_directory_entries
 from .switch_utils import SWITCH_EXTENSIONS, detect_switch_type, scan_switch_ftp, switch_sort_key
 
 
@@ -27,6 +29,30 @@ def _fmt_bytes(num: Any) -> str:
             return f"{val:.0f} {unit}" if unit == "B" else f"{val:.1f} {unit}"
         val /= 1024
     return f"{val:.1f} TB"
+
+
+def _fmt_date(ts: Any) -> str:
+    import datetime
+
+    try:
+        return datetime.datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M")
+    except (TypeError, ValueError, OSError):
+        return "-"
+
+
+def _fmt_duration(seconds: Any) -> str:
+    try:
+        s = int(float(seconds))
+    except (TypeError, ValueError):
+        return "--"
+    if s < 0:
+        return "--"
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
+
+
+SORT_ALIASES = {"nombre": "name", "name": "name", "fecha": "mtime", "mtime": "mtime", "tamano": "size", "tamaño": "size", "size": "size"}
 
 
 def _parse_selection(expr: str, max_idx: int) -> list[int]:
@@ -114,15 +140,28 @@ class ToolboxClient:
                     counts[st] = counts.get(st, 0) + 1
                     if st in ("PEND", "REAN", "PROC"):
                         pending_bytes += int(it.get("size_bytes") or 0)
+                pending_items = counts["PEND"] + counts["REAN"] + counts["PROC"]
                 snap: dict[str, Any] = {
                     "running": False,
                     "stopping": False,
                     "progress": {},
+                    "phase": "idle",
+                    "current": None,
+                    "aggregate": {
+                        "total_items": pending_items,
+                        "done_items": 0,
+                        "total_bytes": pending_bytes,
+                        "done_bytes": 0,
+                        "eta_s": None,
+                    },
                     "counts": counts,
+                    "total_items": len(items),
                     "pending_bytes": pending_bytes,
                 }
                 if kind == "mover":
                     snap["space_check"] = evaluate_mover_space(items, cfg.get("mover_dest") or "")
+                else:
+                    snap["remote_free_bytes"] = None
                 workers[kind] = snap
             return {"workers": workers, "data_root": get_data_root()}
         finally:
@@ -138,13 +177,17 @@ class ToolboxClient:
             return self._http("PUT", "/api/settings", patch)
         return self._local_settings().update(patch)
 
-    def list_dir(self, path: str, kind: str, show_hidden: bool = False) -> dict[str, Any]:
+    def list_dir(
+        self, path: str, kind: str, show_hidden: bool = False, sort: str = "name", order: str = "asc"
+    ) -> dict[str, Any]:
         if self.is_web_running():
             qs = urllib.parse.urlencode(
                 {
                     "kind": kind,
                     "path": path,
                     "show_hidden": "true" if show_hidden else "false",
+                    "sort": sort,
+                    "order": order,
                 }
             )
             return self._http("GET", f"/api/fs/list?{qs}")
@@ -159,33 +202,138 @@ class ToolboxClient:
             statuses = db.get_source_statuses(kind)
         finally:
             db.close()
-        dirs, files = [], []
-        with os.scandir(safe) as entries:
-            for entry in entries:
-                if not show_hidden and entry.name.startswith("."):
-                    continue
-                if safe == data_root and entry.name in {"proc", "sys", "dev", "run"}:
-                    continue
-                full = os.path.join(safe, entry.name)
-                try:
-                    if entry.is_dir(follow_symlinks=True):
-                        dirs.append({"name": entry.name, "path": full})
-                    elif entry.is_file(follow_symlinks=True):
-                        files.append(
-                            {
-                                "name": entry.name,
-                                "path": full,
-                                "size_bytes": entry.stat(follow_symlinks=True).st_size,
-                                "switch_type": detect_switch_type(entry.name),
-                                "queue_status": statuses.get(full, ""),
-                            }
-                        )
-                except OSError:
-                    continue
-        dirs.sort(key=lambda d: d["name"].lower())
-        files.sort(key=lambda f: f["name"].lower())
+        dirs, files = list_directory_entries(safe, data_root, statuses, show_hidden, sort, order)
         parent = os.path.dirname(safe) if safe != data_root else None
-        return {"path": safe, "parent": parent, "data_root": data_root, "dirs": dirs, "files": files}
+        return {
+            "path": safe,
+            "parent": parent,
+            "data_root": data_root,
+            "sort": sort,
+            "order": order,
+            "dirs": dirs,
+            "files": files,
+        }
+
+    def search(self, query: str, path: str, kind: str, limit: int = 300) -> dict[str, Any]:
+        if self.is_web_running():
+            qs = urllib.parse.urlencode({"q": query, "path": path, "kind": kind, "limit": limit})
+            return self._http("GET", f"/api/fs/search?{qs}", timeout=20.0)
+        data_root = get_data_root()
+        cfg = self._local_settings().get()
+        start = path or (cfg["ftp_local_root"] if kind == "ftp" else cfg["mover_origin"])
+        safe = resolve_safe_path(start, data_root)
+        if not os.path.isdir(safe):
+            raise ValueError(f"No es una carpeta: {safe}")
+        return search_files(safe, query, data_root, limit=limit)
+
+    def add_game(self, paths: list[str], dest_dir: str = "") -> dict[str, Any]:
+        if self.is_web_running():
+            return self._http(
+                "POST", "/api/ftp/add-game", {"paths": paths, "dest_dir": dest_dir or None}, timeout=60.0
+            )
+        data_root = get_data_root()
+        cfg = self._local_settings().get()
+        db = self._local_db()
+        try:
+            active = {
+                it["source_path"]
+                for it in db.list_items(kind="ftp")
+                if it["status"] in ("PEND", "REAN", "PAUS", "PROC")
+            }
+            plan = plan_game_upload(paths, data_root, dest_dir or cfg["ftp_remote_dir"], active)
+            inserted = db.add_items(plan["entries"])
+            if inserted:
+                db.add_log("ftp", "INFO", f"[CLI] Juego completo añadido a la cola FTP ({len(inserted)} archivo(s))")
+            return {
+                "added": len(inserted),
+                "items": decorate_queue_items(inserted, cfg, data_root),
+                "warnings": plan["warnings"],
+                "groups": plan["groups"],
+            }
+        finally:
+            db.close()
+
+    def get_history(self, kind: str, limit: int = 100, offset: int = 0) -> dict[str, Any]:
+        if self.is_web_running():
+            qs = urllib.parse.urlencode({"kind": kind, "limit": limit, "offset": offset})
+            return self._http("GET", f"/api/history?{qs}")
+        db = self._local_db()
+        try:
+            items, total = db.list_history(kind=kind, limit=limit, offset=offset)
+            return {"items": items, "total": total}
+        finally:
+            db.close()
+
+    def clear_history(self, kind: str) -> int:
+        if self.is_web_running():
+            return int(self._http("DELETE", f"/api/history?kind={kind}").get("removed", 0))
+        db = self._local_db()
+        try:
+            return db.clear_history(kind)
+        finally:
+            db.close()
+
+    def ftp_space(self) -> dict[str, Any]:
+        if self.is_web_running():
+            return self._http("GET", "/api/ftp/space", timeout=20.0)
+        from .ftp_worker import get_remote_free_space
+
+        res = get_remote_free_space(self._local_settings().get())
+        pending = sum(int(it.get("size_bytes") or 0) for it in self.get_queue("ftp", only_pending=True) if it["status"] != "PAUS")
+        free = res.get("free_bytes") if res.get("supported") else None
+        out = {
+            "supported": bool(res.get("supported")),
+            "free_bytes": free,
+            "pending_bytes": pending,
+            "enough": (free >= pending) if free is not None else None,
+            "method": res.get("method", ""),
+        }
+        if res.get("error"):
+            out["error"] = res["error"]
+        return out
+
+    def _trash(self, db: QueueDB):
+        from .trash import TrashManager
+
+        return TrashManager(db, get_data_root())
+
+    def list_trash(self) -> dict[str, Any]:
+        if self.is_web_running():
+            return self._http("GET", "/api/trash")
+        db = self._local_db()
+        try:
+            cfg = self._local_settings().get()
+            return {
+                "items": self._trash(db).list(),
+                "trash_days": int(cfg.get("trash_days", 7)),
+                "trash_enabled": effective_trash_days(cfg) > 0,
+            }
+        finally:
+            db.close()
+
+    def restore_trash(self, ids: list[int]) -> list[dict[str, Any]]:
+        if self.is_web_running():
+            return self._http("POST", "/api/trash/restore", {"ids": ids}).get("restored", [])
+        db = self._local_db()
+        try:
+            restored = self._trash(db).restore(ids)
+            if restored:
+                db.add_log("sistema", "INFO", f"[CLI] Restaurados {len(restored)} elemento(s) de la papelera")
+            return restored
+        finally:
+            db.close()
+
+    def empty_trash(self, ids: list[int] | None = None) -> int:
+        if self.is_web_running():
+            return int(self._http("POST", "/api/trash/empty", {"ids": ids}).get("removed", 0))
+        db = self._local_db()
+        try:
+            removed = self._trash(db).empty(ids)
+            if removed:
+                db.add_log("sistema", "INFO", f"[CLI] Papelera: eliminados definitivamente {removed} elemento(s)")
+            return removed
+        finally:
+            db.close()
 
     def list_ftp_dirs(self, remote_path: str) -> dict[str, Any]:
         if self.is_web_running():
@@ -203,7 +351,8 @@ class ToolboxClient:
             return self._http("GET", f"/api/queue?{qs}").get("items", [])
         db = self._local_db()
         try:
-            return db.list_items(kind=kind, only_pending=only_pending)
+            items = db.list_items(kind=kind, only_pending=only_pending)
+            return decorate_queue_items(items, self._local_settings().get(), get_data_root())
         finally:
             db.close()
 
@@ -364,7 +513,13 @@ class ToolboxClient:
             ordered = (
                 sorted(items, key=switch_sort_key)
                 if kind == "ftp"
-                else sorted(items, key=lambda it: it["source_path"].lower())
+                else sorted(
+                    items,
+                    key=lambda it: (
+                        0 if it["status"] in ("PROC", "PEND", "REAN", "PAUS") else (1 if it["status"] == "ERR" else 2),
+                        it["source_path"].lower(),
+                    ),
+                )
             )
             db.reorder_items(kind, [it["id"] for it in ordered])
         finally:
@@ -459,19 +614,29 @@ class ToolboxClient:
             db.close()
         return new_path
 
-    def delete_entries(self, paths: list[str]) -> int:
-        if self.is_web_running():
-            return int(self._http("POST", "/api/fs/delete", {"paths": paths}).get("deleted", 0))
-        from .mover_worker import delete_entries
+    def trash_active(self) -> bool:
+        """True si los borrados van a la papelera (activada y con días > 0)."""
+        return effective_trash_days(self.get_settings()) > 0
 
-        deleted = delete_entries(paths, get_data_root())
-        if deleted:
-            db = self._local_db()
-            try:
-                db.add_log("sistema", "INFO", f"[CLI] Eliminados {deleted} elemento(s)")
-            finally:
-                db.close()
-        return deleted
+    def set_trash_enabled(self, enabled: bool) -> bool:
+        self.update_settings({"trash_enabled": bool(enabled)})
+        return self.trash_active()
+
+    def delete_entries(self, paths: list[str], permanent: bool = False) -> dict[str, Any]:
+        """Envía a la papelera (o borra definitivamente). Devuelve {trashed:[...], deleted:N}."""
+        if self.is_web_running():
+            return self._http("POST", "/api/fs/delete", {"paths": paths, "permanent": permanent})
+        db = self._local_db()
+        try:
+            days = effective_trash_days(self._local_settings().get())
+            res = self._trash(db).delete(paths, days, permanent=permanent)
+            if res["trashed"]:
+                db.add_log("sistema", "INFO", f"[CLI] Enviados {len(res['trashed'])} elemento(s) a la papelera")
+            if res["deleted"]:
+                db.add_log("sistema", "INFO", f"[CLI] Eliminados definitivamente {res['deleted']} elemento(s)")
+            return res
+        finally:
+            db.close()
 
     def change_dest_dir(self, item_ids: list[int], dest_dir: str) -> int:
         if self.is_web_running():
@@ -513,12 +678,33 @@ def _print_status_summary(client: ToolboxClient, kind: str) -> None:
             f"pero solo quedan {_fmt_bytes(sc.get('free_bytes', 0))} libres en destino "
             f"(faltan {_fmt_bytes(sc.get('shortfall_bytes', 0))})"
         )
-    prog = st.get("progress") or {}
-    if st.get("running") and prog.get("filename"):
-        print(
-            f"  Progreso: {prog['filename']} -> {float(prog.get('percent', 0)):.1f}% "
-            f"| {prog.get('speed', '--')} | ETA {prog.get('eta', '--')}"
-        )
+    if kind == "ftp":
+        free_sd = st.get("remote_free_bytes")
+        if free_sd is not None:
+            warn = "  ⚠ NO CABE lo pendiente" if free_sd < int(st.get("pending_bytes") or 0) else ""
+            print(f"  Espacio libre en la SD: {_fmt_bytes(free_sd)}{warn}")
+        else:
+            print("  Espacio libre en la SD: desconocido (consulta con: subeftp --espacio)")
+    phase = st.get("phase") or ("transferring" if st.get("running") else "idle")
+    cur = st.get("current") or {}
+    if st.get("running"):
+        if phase == "preparing" or not cur:
+            name = cur.get("name") or (st.get("progress") or {}).get("filename", "")
+            print(f"  Fase: PREPARANDO {name}".rstrip())
+        else:
+            speed = f"{_fmt_bytes(cur['speed_bps'])}/s" if cur.get("speed_bps") else "--"
+            print(
+                f"  Fase: TRANSFIRIENDO {cur.get('rel_src') or cur.get('name', '')} -> "
+                f"{float(cur.get('percent', 0)):.1f}% ({_fmt_bytes(cur.get('bytes_done'))}/"
+                f"{_fmt_bytes(cur.get('total_bytes'))}) | {speed} | ETA {_fmt_duration(cur.get('eta_s'))}"
+            )
+        agg = st.get("aggregate") or {}
+        if agg.get("total_items"):
+            print(
+                f"  Global: {agg.get('done_items', 0)}/{agg.get('total_items', 0)} archivo(s) · "
+                f"{_fmt_bytes(agg.get('done_bytes', 0))}/{_fmt_bytes(agg.get('total_bytes', 0))} · "
+                f"ETA total {_fmt_duration(agg.get('eta_s'))}"
+            )
 
 
 def _print_queue_table(items: list[dict[str, Any]]) -> None:
@@ -528,10 +714,109 @@ def _print_queue_table(items: list[dict[str, Any]]) -> None:
     for idx, it in enumerate(items, 1):
         sw = f"[{it['switch_type']}] " if it.get("switch_type") else ""
         err = f" | ERR: {it['error']}" if it.get("error") else ""
+        src = it.get("rel_src") or it["source_path"]
+        dst = it.get("rel_dest") or it["dest_path"]
         print(
             f"  {idx:3d}. [#{it['id']}] [{it['status']:4s}] [{it['operation'].upper():5s}] "
-            f"{sw}{it['source_path']} -> {it['dest_path']} ({_fmt_bytes(it.get('size_bytes'))}){err}"
+            f"{sw}{src} -> {dst} ({_fmt_bytes(it.get('size_bytes'))}){err}"
         )
+
+
+def _print_listing(listing: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """Imprime un listado de carpeta con fecha de modificación y devuelve las entradas numeradas."""
+    entries: list[tuple[str, dict[str, Any]]] = [("dir", d) for d in listing["dirs"]] + [
+        ("file", f) for f in listing["files"]
+    ]
+    if not entries:
+        print("  (carpeta vacía)")
+    for idx, (etype, obj) in enumerate(entries, 1):
+        date = _fmt_date(obj.get("mtime"))
+        if etype == "dir":
+            print(f"  {idx:3d}) {date}  [DIR ]           {obj['name']}/")
+        else:
+            sw = f"[{obj['switch_type']}] " if obj.get("switch_type") else ""
+            print(f"  {idx:3d}) {date}  {_fmt_bytes(obj.get('size_bytes')):>10s}  {sw}{obj['name']}")
+    return entries
+
+
+def _print_search(res: dict[str, Any]) -> None:
+    results = res.get("results", [])
+    print(f"Búsqueda de '{res.get('query', '')}' en {res.get('path', '')}: {len(results)} resultado(s)")
+    for idx, r in enumerate(results, 1):
+        kind_lbl = "[DIR ]" if r.get("is_dir") else f"{_fmt_bytes(r.get('size')):>10s}"
+        sw = f"[{r['switch_type']}] " if r.get("switch_type") else ""
+        print(f"  {idx:3d}) {_fmt_date(r.get('mtime'))}  {kind_lbl}  {sw}{r['rel']}")
+    if res.get("truncated"):
+        print("  (resultados truncados: afina la búsqueda o elige una carpeta más concreta)")
+
+
+def _print_game_result(res: dict[str, Any]) -> None:
+    for g in res.get("groups", []):
+        tid = f" [{g['title_id']}]" if g.get("title_id") else ""
+        base = "Base ✓" if g.get("base") else "SIN BASE"
+        print(f"  • {g['name']}{tid}: {base} · {g.get('upd', 0)} update(s) · {g.get('dlc', 0)} DLC")
+    for w in res.get("warnings", []):
+        print(f"  ⚠ {w}")
+    print(f"Añadidos a la cola FTP: {res.get('added', 0)} archivo(s) en orden Base → Update → DLC")
+
+
+def _print_history(data: dict[str, Any]) -> None:
+    items = data.get("items", [])
+    if not items:
+        print("  (historial vacío)")
+        return
+    for h in items:
+        speed = f"{_fmt_bytes(h['avg_bps'])}/s" if h.get("avg_bps") else "--"
+        err = f" | {h['error']}" if h.get("error") else ""
+        name = os.path.basename(h.get("src") or "")
+        print(
+            f"  {_fmt_date(h.get('finished_at'))}  [{h['kind'].upper():5s}] [{h['status']:3s}] "
+            f"{name} ({_fmt_bytes(h.get('size'))}) · {_fmt_duration(h.get('duration_s'))} · {speed}{err}"
+        )
+    print(f"  Mostrando {len(items)} de {data.get('total', len(items))} registro(s)")
+
+
+def _print_trash(data: dict[str, Any]) -> None:
+    items = data.get("items", [])
+    days = data.get("trash_days")
+    if data.get("trash_enabled", True):
+        print(f"Papelera ACTIVADA ({len(items)} elemento(s); se conservan {days} día(s))")
+    else:
+        print(
+            f"Papelera DESACTIVADA: los borrados son definitivos ({len(items)} elemento(s) antiguos; "
+            "activar con --papelera-activar)"
+        )
+    if not items:
+        print("  (papelera vacía)")
+    for t in items:
+        kind_lbl = "[DIR]" if t.get("is_dir") else "     "
+        print(
+            f"  #{t['id']:<5d} {kind_lbl} {t['original_path']} ({_fmt_bytes(t.get('size'))}) · "
+            f"borrado {_fmt_date(t.get('trashed_at'))} · caduca {_fmt_date(t.get('expires_at'))}"
+        )
+
+
+def _print_ftp_space(res: dict[str, Any]) -> int:
+    pending = _fmt_bytes(res.get("pending_bytes", 0))
+    if not res.get("supported"):
+        extra = f" ({res['error']})" if res.get("error") else ""
+        print(f"El servidor FTP no informa del espacio libre{extra}. Pendiente de subir: {pending}")
+        return 0 if not res.get("error") else 1
+    free = _fmt_bytes(res.get("free_bytes"))
+    if res.get("enough"):
+        print(f"Espacio libre en la SD: {free} (método {res.get('method')}). Pendiente: {pending} → cabe.")
+    else:
+        print(f"Espacio libre en la SD: {free} (método {res.get('method')}). Pendiente: {pending} → ⚠ NO CABE.")
+    return 0
+
+
+def _report_delete(res: dict[str, Any]) -> None:
+    trashed = res.get("trashed", [])
+    if trashed:
+        ids = ",".join(str(t["id"]) for t in trashed)
+        print(f"Enviados a la papelera: {len(trashed)} (restaurar con --restaurar {ids})")
+    if res.get("deleted"):
+        print(f"Eliminados definitivamente: {res['deleted']}")
 
 
 def _ask_yes_no(prompt: str, default_yes: bool = True) -> bool:
@@ -554,11 +839,23 @@ Uso:
   mover                               Abre el menú interactivo TUI compartido con la Web
   mover [OPCIONES] [RUTAS...]         Añade rutas a la cola compartida
   mover --iniciar | --parar           Arranca o detiene el worker en segundo plano
-  mover --estado | --pendientes       Muestra estado, espacio libre y cola compartida
+  mover --estado | --pendientes       Estado, fase, progreso global, espacio libre y cola
+  mover --listar [RUTA] [--orden nombre|fecha|tamano] [--desc]
+                                      Lista una carpeta con fecha de modificación
+  mover --buscar TEXTO [RUTA]         Busca recursivamente (sin distinguir mayúsculas ni acentos)
   mover --cambiar-destino IDs RUTA    Cambia destino de ítems en cola (ej: 1,2 /host/mnt/pelis)
   mover --tamano RUTA                 Calcula tamaño total y nº de archivos de una carpeta
   mover --renombrar RUTA NUEVO_NOMBRE Renombra un archivo o carpeta del servidor
-  mover --borrar [-y] RUTA...         Elimina archivos o carpetas del servidor
+  mover --borrar [-y] [--permanente] RUTA...
+                                      Envía a la papelera (o borra definitivamente)
+  mover --papelera                    Lista la papelera con sus IDs
+  mover --restaurar ID[,ID...]        Restaura elementos de la papelera
+  mover --vaciar-papelera [-y] [ID,...]
+                                      Borra definitivamente toda la papelera (o esos IDs)
+  mover --papelera-activar | --papelera-desactivar
+                                      Activa/desactiva la papelera (desactivada = borrado definitivo)
+  mover --historial [N]               Últimas N transferencias terminadas (def. 30)
+  mover --limpiar-historial           Vacía el historial de mover
   mover --log [N]                     Últimas N líneas del registro compartido (def. 40)
   mover --legacy [...]                Usa el script Bash clásico aislado (/config/cli/mover)
 
@@ -576,11 +873,23 @@ Uso:
   subeftp                             Abre el menú interactivo TUI compartido con la Web
   subeftp [OPCIONES] [RUTAS...]       Añade rutas a la cola FTP compartida con la Web
   subeftp --subir | --parar           Arranca o detiene las subidas en segundo plano
-  subeftp --estado | --pendientes     Muestra estado y cola FTP compartida
+  subeftp --estado | --pendientes     Estado, fase, progreso global, espacio SD y cola FTP
+  subeftp --juego RUTA... [-d DEST] [-s]
+                                      Encola juego(s) completo(s): Base -> Update -> DLC
+  subeftp --espacio                   Consulta el espacio libre en la SD (si el servidor lo soporta)
+  subeftp --listar [RUTA] [--orden nombre|fecha|tamano] [--desc]
+                                      Lista una carpeta local con fecha de modificación
+  subeftp --buscar TEXTO [RUTA]       Busca recursivamente en las carpetas locales
   subeftp --cambiar-destino IDs RUTA  Cambia carpeta remota en cola (ej: 1,2 /install)
   subeftp --tamano RUTA               Calcula tamaño total de una carpeta local
   subeftp --renombrar RUTA NUEVO_NOM  Renombra un archivo o carpeta local
-  subeftp --borrar [-y] RUTA...       Elimina archivos o carpetas locales
+  subeftp --borrar [-y] [--permanente] RUTA...
+                                      Envía a la papelera (o borra definitivamente)
+  subeftp --papelera | --restaurar ID[,ID...] | --vaciar-papelera [-y] [ID,...]
+  subeftp --papelera-activar | --papelera-desactivar
+                                      Activa/desactiva la papelera (desactivada = borrado definitivo)
+  subeftp --historial [N]             Últimas N subidas terminadas (def. 30)
+  subeftp --limpiar-historial         Vacía el historial FTP
   subeftp --probar                    Prueba la conexión FTP configurada
   subeftp --buscar-switch             Escanea la red LAN buscando Nintendo Switch
   subeftp --log [N]                   Últimas N líneas del registro compartido (def. 40)
@@ -599,9 +908,10 @@ def _interactive_explore(client: ToolboxClient, kind: str) -> None:
     op = cfg.get("mover_operation", "copiar")
     dest_dir = ""
     text_filter = ""
+    sort, order = "name", "asc"
 
     while True:
-        listing = client.list_dir(cur_path, kind)
+        listing = client.list_dir(cur_path, kind, sort=sort, order=order)
         cur_path = listing["path"]
         dirs = [d for d in listing["dirs"] if not text_filter or text_filter in d["name"].lower()]
         files = [f for f in listing["files"] if not text_filter or text_filter in f["name"].lower()]
@@ -613,27 +923,32 @@ def _interactive_explore(client: ToolboxClient, kind: str) -> None:
             print(f"Operación: {op.upper()} | Destino: {dest_dir or '(automático de Configuración)'}")
         else:
             print(f"Destino FTP: {dest_dir or cfg.get('ftp_remote_dir', '/')} (automático si vacío)")
+        sort_lbl = {"name": "nombre", "mtime": "fecha", "size": "tamaño"}[sort]
+        print(f"Orden: {sort_lbl} {'descendente' if order == 'desc' else 'ascendente'}")
         if text_filter:
             print(f"Filtro activo: '{text_filter}' (escribe * para quitar)")
         print("-" * 76)
         if not entries:
             print("  (carpeta vacía o sin coincidencias)")
         for idx, (etype, obj) in enumerate(entries, 1):
+            date = _fmt_date(obj.get("mtime"))
             if etype == "dir":
-                print(f"  {idx:3d}) [DIR ] {obj['name']}/")
+                print(f"  {idx:3d}) {date}  [DIR ]      {obj['name']}/")
             else:
                 sw = f"[{obj['switch_type']}] " if obj.get("switch_type") else ""
                 st = f" ({obj['queue_status']})" if obj.get("queue_status") else ""
-                print(f"  {idx:3d})       {sw}{obj['name']} [{_fmt_bytes(obj.get('size_bytes'))}]{st}")
+                print(f"  {idx:3d}) {date}  {_fmt_bytes(obj.get('size_bytes')):>9s}  {sw}{obj['name']}{st}")
         print("-" * 76)
         if kind == "mover":
             print("  N / 1,3-5: abrir/añadir | t: todo | r N: carpeta recursiva | o: copiar/mover")
-            print("  tam N: tamaño carpeta | ren N: renombrar | del N[,M-K]: borrar del servidor")
-            print("  d: elegir destino local | a: destino automático | /TXT | * | .. | v: volver")
+            print("  tam N: tamaño | ren N: renombrar | del N[,M-K]: a la papelera | ?TXT: buscar")
+            print("  orden nombre|fecha|tamano [desc] | d: destino local | a: destino auto")
+            print("  /TXT: filtrar | *: quitar filtro | ..: subir | v: volver")
         else:
-            print("  N / 1,3-5: abrir/añadir | j: solo juegos Switch | t: todo | r N: carpeta recursiva")
-            print("  tam N: tamaño carpeta | ren N: renombrar | del N[,M-K]: borrar del servidor")
-            print("  d: escribir ruta destino FTP | a: destino automático | /TXT | * | .. | v: volver")
+            print("  N / 1,3-5: abrir/añadir | j: solo juegos Switch | jc N: juego completo")
+            print("  t: todo | r N: carpeta recursiva | tam N | ren N | del N[,M-K]: a la papelera")
+            print("  ?TXT: buscar | orden nombre|fecha|tamano [desc] | d: destino FTP | a: auto")
+            print("  /TXT: filtrar | *: quitar filtro | ..: subir | v: volver")
 
         cmd = input("  Opción: ").strip()
         if not cmd or cmd.lower() == "v":
@@ -647,6 +962,34 @@ def _interactive_explore(client: ToolboxClient, kind: str) -> None:
             continue
         if cmd.startswith("/"):
             text_filter = cmd[1:].strip().lower()
+            continue
+        if cmd.lower().startswith("orden"):
+            parts = cmd.lower().split()
+            if len(parts) >= 2 and parts[1] in SORT_ALIASES:
+                sort = SORT_ALIASES[parts[1]]
+                order = "desc" if (len(parts) >= 3 and parts[2] in ("desc", "d", "-")) else "asc"
+            else:
+                print("  Uso: orden nombre|fecha|tamano [desc]")
+            continue
+        if cmd.startswith("?") and len(cmd) > 1:
+            res = client.search(cmd[1:].strip(), cur_path, kind)
+            print()
+            _print_search(res)
+            hits = res.get("results", [])
+            if hits:
+                sel = input("  Números a añadir a la cola (ej: 1,3-5; Enter = ninguno): ").strip()
+                picked = [hits[i - 1]["path"] for i in _parse_selection(sel, len(hits))] if sel else []
+                if picked:
+                    added = client.add_paths(
+                        kind, picked, recursive=True, base_browse_dir=cur_path, operation=op, dest_dir=dest_dir
+                    )
+                    print(f"  -> Añadidos: {added['added']} (omitidos: {added['skipped']})")
+            continue
+        if kind == "ftp" and cmd.lower().startswith("jc "):
+            idxs = _parse_selection(cmd[3:].strip(), len(entries))
+            picked = [entries[i - 1][1]["path"] for i in idxs]
+            if picked:
+                _print_game_result(client.add_game(picked, dest_dir))
             continue
         if cmd.lower() == "a":
             dest_dir = ""
@@ -677,9 +1020,14 @@ def _interactive_explore(client: ToolboxClient, kind: str) -> None:
             sel_str = cmd.split(None, 1)[1].strip()
             idxs = _parse_selection(sel_str, len(entries))
             targets = [entries[i - 1][1]["path"] for i in idxs]
-            if targets and _ask_yes_no(f"  ¿Eliminar permanentemente {len(targets)} elemento(s)?", False):
-                deleted = client.delete_entries(targets)
-                print(f"  -> Eliminados: {deleted}")
+            if targets:
+                what = (
+                    "¿Enviar {n} elemento(s) a la papelera?"
+                    if client.trash_active()
+                    else "¿Eliminar DEFINITIVAMENTE {n} elemento(s)? (papelera desactivada)"
+                )
+                if _ask_yes_no("  " + what.format(n=len(targets)), False):
+                    _report_delete(client.delete_entries(targets))
             continue
         if cmd.lower() == "d":
             if kind == "mover":
@@ -851,13 +1199,14 @@ def _interactive_menu(client: ToolboxClient, kind: str) -> int:
             print("  2) Ver / gestionar toda la cola   7) Ver configuración actual")
             print("  3) Ver solo pendientes            8) Ver registro (log)")
             print("  4) Ver progreso en vivo           9) Ayuda")
-            print("  5) Iniciar / Detener worker       0) Salir")
+            print("  5) Iniciar / Detener worker       i) Historial   t) Papelera   0) Salir")
         else:
             print("  1) Explorar y añadir a la cola    6) Probar conexión FTP")
             print("  2) Ver / gestionar toda la cola   7) Buscar IP de Switch en red")
             print("  3) Ver solo pendientes            8) Editar configuración FTP")
             print("  4) Ver progreso en vivo           9) Ver registro (log)")
-            print("  5) Iniciar / Detener subida       h) Ayuda   0) Salir")
+            print("  5) Iniciar / Detener subida       e) Espacio libre en la SD")
+            print("  i) Historial   t) Papelera        h) Ayuda   0) Salir")
         print("=" * 76)
 
         op = input("  Opción: ").strip().lower()
@@ -903,9 +1252,53 @@ def _interactive_menu(client: ToolboxClient, kind: str) -> int:
                     _print_logs(client, "ftp", 40)
             elif op in ("h", "?"):
                 _print_help(kind)
+            elif op == "i":
+                _print_history(client.get_history(kind, 30))
+                if _ask_yes_no("  ¿Vaciar el historial de esta cola?", False):
+                    print(f"  Eliminados: {client.clear_history(kind)}")
+            elif op == "t":
+                _interactive_trash(client)
+            elif op == "e" and kind == "ftp":
+                print("  Consultando el espacio libre en el servidor FTP...")
+                _print_ftp_space(client.ftp_space())
         except Exception as exc:
             print(f"  Error: {exc}")
         input("\n  Pulsa Enter para continuar...")
+
+
+def _interactive_trash(client: ToolboxClient) -> None:
+    while True:
+        data = client.list_trash()
+        print()
+        _print_trash(data)
+        items = data.get("items", [])
+        toggle_lbl = "desactivar" if data.get("trash_enabled", True) else "activar"
+        if items:
+            print("  r ID[,ID]: restaurar | b ID[,ID]: borrar definitivamente | x: vaciar todo")
+        print(f"  a: {toggle_lbl} papelera | v: volver")
+        cmd = input("  Acción: ").strip().lower()
+        if not cmd or cmd == "v":
+            return
+        if cmd == "a":
+            if data.get("trash_enabled", True):
+                if _ask_yes_no("  ¿Desactivar la papelera? Los próximos borrados serán definitivos", False):
+                    client.set_trash_enabled(False)
+                    print("  -> Papelera desactivada (lo que ya contiene se conserva hasta caducar)")
+            else:
+                active = client.set_trash_enabled(True)
+                print("  -> Papelera activada" + ("" if active else " (pero trash_days=0: sube los días en ajustes)"))
+            continue
+        ids = [int(x.lstrip("#")) for x in cmd[2:].replace(" ", "").split(",") if x.lstrip("#").isdigit()]
+        if cmd.startswith("r ") and ids:
+            for r in client.restore_trash(ids):
+                extra = " (renombrado: ya existía)" if r.get("renamed") else ""
+                print(f"  -> Restaurado #{r['id']} en {r['path']}{extra}")
+        elif cmd.startswith("b ") and ids:
+            if _ask_yes_no(f"  ¿Borrar definitivamente {len(ids)} elemento(s)?", False):
+                print(f"  -> Eliminados: {client.empty_trash(ids)}")
+        elif cmd == "x":
+            if _ask_yes_no("  ¿Vaciar toda la papelera? No se puede deshacer", False):
+                print(f"  -> Eliminados: {client.empty_trash(None)}")
 
 
 def _print_logs(client: ToolboxClient, kind: str, limit: int) -> None:
@@ -934,6 +1327,10 @@ def _run_scan_switch(client: ToolboxClient) -> int:
         client.update_settings({"ftp_host": first["ip"], "ftp_port": int(first["port"])})
         print(f"Guardado {first['ip']}:{first['port']} en Configuración compartida.")
     return 0
+
+
+def _parse_ids(expr: str) -> list[int]:
+    return [int(x.lstrip("#")) for x in expr.replace(" ", "").split(",") if x.lstrip("#").isdigit()]
 
 
 def _resolve_cli_paths(raw_items: list[str]) -> list[str]:
@@ -996,20 +1393,146 @@ def run_cli(argv: list[str], client: ToolboxClient | None = None) -> int:
         print(f"Renombrado a: {new_p}")
         return 0
     if first == "--borrar":
-        rest = args[1:]
         force = False
-        if rest and rest[0] in ("-y", "--yes"):
-            force = True
-            rest = rest[1:]
+        permanent = False
+        rest: list[str] = []
+        for a in args[1:]:
+            if a in ("-y", "--yes"):
+                force = True
+            elif a == "--permanente":
+                permanent = True
+            else:
+                rest.append(a)
         targets = _resolve_cli_paths(rest)
         if not targets:
             print("No se indicaron rutas válidas para borrar.", file=sys.stderr)
             return 1
-        if not force and sys.stdin.isatty() and not _ask_yes_no(f"¿Eliminar {len(targets)} elemento(s)?", False):
+        if not permanent and not cli.trash_active():
+            permanent = True
+            print("Papelera desactivada: el borrado será definitivo.", file=sys.stderr)
+        what = "Eliminar DEFINITIVAMENTE" if permanent else "Enviar a la papelera"
+        if not force and sys.stdin.isatty() and not _ask_yes_no(f"¿{what} {len(targets)} elemento(s)?", False):
             return 0
-        deleted = cli.delete_entries(targets)
-        print(f"Eliminados: {deleted}")
+        _report_delete(cli.delete_entries(targets, permanent=permanent))
         return 0
+    if first == "--papelera":
+        _print_trash(cli.list_trash())
+        return 0
+    if first in ("--papelera-activar", "--papelera-desactivar"):
+        enable = first == "--papelera-activar"
+        active = cli.set_trash_enabled(enable)
+        if enable:
+            print("Papelera activada: los borrados se podrán restaurar." if active
+                  else "Papelera activada, pero trash_days=0: súbelo en los ajustes para que tenga efecto.")
+        else:
+            print("Papelera desactivada: los próximos borrados serán definitivos "
+                  "(lo que ya contiene se conserva hasta caducar).")
+        return 0
+    if first == "--restaurar":
+        ids = _parse_ids(args[1] if len(args) > 1 else "")
+        if not ids:
+            print("Uso: --restaurar ID[,ID...]  (los IDs salen en --papelera)", file=sys.stderr)
+            return 1
+        restored = cli.restore_trash(ids)
+        for r in restored:
+            extra = " (renombrado: ya existía)" if r.get("renamed") else ""
+            print(f"Restaurado #{r['id']} en {r['path']}{extra}")
+        missing = set(ids) - {r["id"] for r in restored}
+        if missing:
+            print(f"No encontrados en la papelera: {', '.join(str(i) for i in sorted(missing))}", file=sys.stderr)
+            return 1
+        return 0
+    if first == "--vaciar-papelera":
+        rest = [a for a in args[1:] if a not in ("-y", "--yes")]
+        force = len(rest) != len(args) - 1
+        ids = _parse_ids(rest[0]) if rest else None
+        what = f"{len(ids)} elemento(s) de la papelera" if ids else "TODA la papelera"
+        if not force and sys.stdin.isatty() and not _ask_yes_no(f"¿Borrar definitivamente {what}?", False):
+            return 0
+        print(f"Eliminados definitivamente: {cli.empty_trash(ids)}")
+        return 0
+    if first == "--listar":
+        path_arg = ""
+        sort, order = "name", "asc"
+        i = 1
+        while i < len(args):
+            a = args[i]
+            if a == "--orden" and i + 1 < len(args):
+                key = args[i + 1].lower()
+                if key not in SORT_ALIASES:
+                    print("Uso: --orden nombre|fecha|tamano", file=sys.stderr)
+                    return 1
+                sort = SORT_ALIASES[key]
+                i += 2
+                continue
+            if a.startswith("--orden="):
+                key = a.split("=", 1)[1].lower()
+                if key not in SORT_ALIASES:
+                    print("Uso: --orden nombre|fecha|tamano", file=sys.stderr)
+                    return 1
+                sort = SORT_ALIASES[key]
+            elif a == "--desc":
+                order = "desc"
+            elif a.startswith("-"):
+                print(f"Opción no reconocida en --listar: {a}", file=sys.stderr)
+                return 1
+            else:
+                path_arg = str(Path(a).expanduser().resolve())
+            i += 1
+        listing = cli.list_dir(path_arg, kind, sort=sort, order=order)
+        print(f"{listing['path']}  (orden: {sort} {order})")
+        _print_listing(listing)
+        return 0
+    if first == "--buscar":
+        if len(args) < 2 or not args[1].strip():
+            print("Uso: --buscar TEXTO [RUTA]", file=sys.stderr)
+            return 1
+        start = str(Path(args[2]).expanduser().resolve()) if len(args) > 2 else ""
+        res = cli.search(args[1], start, kind)
+        _print_search(res)
+        return 0 if res.get("results") else 1
+    if first == "--historial":
+        limit = int(args[1]) if len(args) > 1 and args[1].isdigit() else 30
+        _print_history(cli.get_history(kind, limit))
+        return 0
+    if first == "--limpiar-historial":
+        print(f"Registros de historial eliminados: {cli.clear_history(kind)}")
+        return 0
+    if kind == "ftp" and first == "--espacio":
+        return _print_ftp_space(cli.ftp_space())
+    if kind == "ftp" and first == "--juego":
+        dest = ""
+        start_now = False
+        raw: list[str] = []
+        i = 1
+        while i < len(args):
+            a = args[i]
+            if a in ("-d", "--destino") and i + 1 < len(args):
+                dest = args[i + 1]
+                i += 2
+                continue
+            if a.startswith("--destino="):
+                dest = a.split("=", 1)[1]
+            elif a in ("-s", "--subir", "--ahora", "-i", "--iniciar"):
+                start_now = True
+            elif a.startswith("-"):
+                print(f"Opción no reconocida en --juego: {a}", file=sys.stderr)
+                return 1
+            else:
+                raw.append(a)
+            i += 1
+        paths = _resolve_cli_paths(raw)
+        if not paths:
+            print("Uso: subeftp --juego RUTA... [-d DESTINO] [-s]", file=sys.stderr)
+            return 1
+        res = cli.add_game(paths, normalize_remote_path(dest) if dest else "")
+        _print_game_result(res)
+        if res.get("added", 0) > 0 and (
+            start_now or (sys.stdin.isatty() and _ask_yes_no("¿Iniciar la subida ahora?", True))
+        ):
+            cli.start_queue("ftp")
+            print("Subida FTP iniciada en segundo plano (visible en Web y SSH).")
+        return 0 if res.get("added", 0) > 0 else 1
     if first == "--cambiar-destino":
         if len(args) < 3:
             print("Uso: --cambiar-destino ID[,ID...] RUTA_DESTINO", file=sys.stderr)

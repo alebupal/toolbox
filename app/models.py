@@ -19,6 +19,16 @@ class RenameRequest(BaseModel):
 
 class DeletePathsRequest(BaseModel):
     paths: list[str] = Field(..., min_length=1)
+    permanent: bool = False
+
+
+class TrashIdsRequest(BaseModel):
+    ids: list[int] | None = None
+
+
+class AddGameRequest(BaseModel):
+    paths: list[str] = Field(..., min_length=1)
+    dest_dir: str | None = None
 
 
 class ChangeDestRequest(BaseModel):
@@ -55,7 +65,7 @@ class SettingsUpdateRequest(BaseModel):
     mover_retry_wait: int | None = None
     mover_verify: Literal["tamano", "checksum", "no"] | None = None
     mover_conflict: Literal["omitir", "sobrescribir", "renombrar"] | None = None
-    mover_favorites: list[str] | None = None
+    mover_favorites: list[str] | str | None = None
 
     ftp_host: str | None = None
     ftp_port: int | None = None
@@ -71,4 +81,6 @@ class SettingsUpdateRequest(BaseModel):
     ftp_retries: int | None = None
     ftp_retry_wait: int | None = None
     ftp_verify_size: bool | None = None
+    trash_days: int | None = None
+    trash_enabled: bool | None = None
 

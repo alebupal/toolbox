@@ -3,103 +3,132 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <meta name="theme-color" content="#171d27">
+  <meta name="theme-color" content="#171d27" id="metaThemeColor">
   <title>Toolbox · Utilidades</title>
-  <link rel="stylesheet" href="/static/style.css?v=6">
+  <script>
+    // Aplicar el tema guardado antes de pintar para evitar parpadeos
+    (function () {
+      try {
+        var t = localStorage.getItem("toolbox_theme");
+        if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+      } catch (e) { /* almacenamiento no disponible */ }
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/style.css?v=7">
 </head>
 <body>
+  <a class="skip-link" href="#mainContent">Saltar al contenido</a>
+
   <header class="topbar">
     <div class="brand">
-      <span class="brand-icon">🧰</span>
+      <span class="brand-icon" aria-hidden="true">🧰</span>
       <div>
         <h1>Toolbox</h1>
         <p class="subtitle">Utilidades del servidor · Mover / Copiar local + FTP / Switch</p>
       </div>
     </div>
-    <nav class="tabs" id="mainTabs">
-      <button class="tab active" data-tab="explore">📁 Explorar</button>
-      <button class="tab" data-tab="queue">📋 Colas <span class="badge-pill" id="tabQueueBadge">0</span></button>
-      <button class="tab" data-tab="config">⚙️ Configuración</button>
-      <button class="tab" data-tab="logs">📜 Registro</button>
-      <button class="tab" data-tab="readme">📖 Guía / README</button>
-    </nav>
+    <div class="topbar-right">
+      <nav class="tabs" id="mainTabs" aria-label="Secciones">
+        <button type="button" class="tab active" data-tab="explore" aria-current="page"><span aria-hidden="true">📁</span> Explorar</button>
+        <button type="button" class="tab" data-tab="queue"><span aria-hidden="true">📋</span> Colas <span class="badge-pill" data-queue-badge>0</span></button>
+        <button type="button" class="tab" data-tab="history"><span aria-hidden="true">🕘</span> Historial</button>
+        <button type="button" class="tab" data-tab="trash"><span aria-hidden="true">🗑</span> Papelera</button>
+        <button type="button" class="tab" data-tab="config"><span aria-hidden="true">⚙️</span> Ajustes</button>
+        <button type="button" class="tab" data-tab="logs"><span aria-hidden="true">📜</span> Registro</button>
+        <button type="button" class="tab" data-tab="readme"><span aria-hidden="true">📖</span> Guía</button>
+      </nav>
+      <button type="button" class="btn btn-icon theme-toggle" id="btnThemeToggle" aria-label="Tema: automático" title="Tema: automático">
+        <span aria-hidden="true" id="themeIcon">🖥</span>
+      </button>
+    </div>
   </header>
 
-  <section class="status-strip">
-    <div class="worker-card" id="cardMover">
-      <div class="worker-head">
-        <div>
-          <span class="worker-title">💾 Cola Mover / Copiar</span>
-          <span class="status-pill" id="moverState">Detenido</span>
-        </div>
-        <div class="worker-actions">
-          <button class="btn btn-sm btn-primary" id="btnStartMover">▶ Iniciar</button>
-          <button class="btn btn-sm btn-danger hidden" id="btnStopMover">⏹ Detener</button>
-        </div>
-      </div>
-      <div class="worker-meta" id="moverMeta">Pendientes: 0 · Completados: 0 · Errores: 0</div>
-      <div class="space-alert hidden" id="moverSpaceAlert"></div>
-      <div class="progress-wrap hidden" id="moverProgWrap">
-        <div class="progress-info">
-          <span id="moverProgFile">-</span>
-          <span id="moverProgStats">0%</span>
-        </div>
-        <div class="progress-bar"><div class="progress-fill" id="moverProgFill"></div></div>
-      </div>
-    </div>
+  <!-- ESTADO DE LAS COLAS (tarjetas en escritorio / franja desplegable en móvil) -->
+  <section class="status-strip" id="statusStrip" aria-label="Estado de las colas">
+    <button type="button" class="status-compact" id="statusCompact" aria-expanded="false" aria-controls="statusCards">
+      <span class="sc-item" id="scMover"><span class="dot" aria-hidden="true"></span> Mover parado</span>
+      <span class="sc-sep" aria-hidden="true">·</span>
+      <span class="sc-item" id="scFtp"><span class="dot" aria-hidden="true"></span> FTP parado</span>
+      <span class="sc-chevron" aria-hidden="true">▾</span>
+    </button>
 
-    <div class="worker-card" id="cardFtp">
-      <div class="worker-head">
-        <div>
-          <span class="worker-title">📡 Cola FTP / Switch</span>
-          <span class="status-pill" id="ftpState">Detenido</span>
+    <div class="status-cards" id="statusCards">
+      <div class="worker-card" id="cardMover">
+        <div class="worker-head">
+          <span class="worker-title"><span aria-hidden="true">💾</span> Mover / Copiar</span>
+          <span class="status-pill" id="moverState">Detenido</span>
+          <span class="worker-meta" id="moverMeta">—</span>
+          <div class="worker-actions">
+            <button type="button" class="btn btn-sm btn-primary" id="btnStartMover">▶ Iniciar</button>
+            <button type="button" class="btn btn-sm btn-danger hidden" id="btnStopMover">⏹ Detener</button>
+          </div>
         </div>
-        <div class="worker-actions">
-          <button class="btn btn-sm btn-primary" id="btnStartFtp">▶ Iniciar</button>
-          <button class="btn btn-sm btn-danger hidden" id="btnStopFtp">⏹ Detener</button>
+        <div class="space-alert hidden" id="moverSpaceAlert" role="status"></div>
+        <div class="progress-wrap hidden" id="moverProgWrap">
+          <div class="progress-info">
+            <span class="prog-file" id="moverProgFile">-</span>
+            <span class="prog-stats" id="moverProgStats">0%</span>
+          </div>
+          <div class="progress-bar" role="progressbar" aria-label="Progreso de Mover / Copiar" aria-valuemin="0" aria-valuemax="100" id="moverProgBar">
+            <div class="progress-fill" id="moverProgFill"></div>
+          </div>
+          <div class="progress-aggregate muted" id="moverProgAgg"></div>
         </div>
       </div>
-      <div class="worker-meta" id="ftpMeta">Pendientes: 0 · Completados: 0 · Errores: 0</div>
-      <div class="progress-wrap hidden" id="ftpProgWrap">
-        <div class="progress-info">
-          <span id="ftpProgFile">-</span>
-          <span id="ftpProgStats">0%</span>
+
+      <div class="worker-card" id="cardFtp">
+        <div class="worker-head">
+          <span class="worker-title"><span aria-hidden="true">📡</span> FTP / Switch</span>
+          <span class="status-pill" id="ftpState">Detenido</span>
+          <span class="worker-meta" id="ftpMeta">—</span>
+          <div class="worker-actions">
+            <button type="button" class="btn btn-sm btn-primary" id="btnStartFtp">▶ Iniciar</button>
+            <button type="button" class="btn btn-sm btn-danger hidden" id="btnStopFtp">⏹ Detener</button>
+          </div>
         </div>
-        <div class="progress-bar"><div class="progress-fill ftp" id="ftpProgFill"></div></div>
+        <div class="space-alert hidden" id="ftpSpaceAlert" role="status"></div>
+        <div class="progress-wrap hidden" id="ftpProgWrap">
+          <div class="progress-info">
+            <span class="prog-file" id="ftpProgFile">-</span>
+            <span class="prog-stats" id="ftpProgStats">0%</span>
+          </div>
+          <div class="progress-bar" role="progressbar" aria-label="Progreso de FTP / Switch" aria-valuemin="0" aria-valuemax="100" id="ftpProgBar">
+            <div class="progress-fill ftp" id="ftpProgFill"></div>
+          </div>
+          <div class="progress-aggregate muted" id="ftpProgAgg"></div>
+        </div>
       </div>
     </div>
   </section>
 
-  <main class="container">
+  <main class="container" id="mainContent" tabindex="-1">
     <!-- TAB: EXPLORAR (DOBLE PANEL ORIGEN -> DESTINO) -->
-    <section class="tab-panel active" id="tab-explore">
+    <section class="tab-panel active" id="tab-explore" aria-label="Explorar">
       <div class="toolbar explore-top">
-        <div class="mode-switch">
-          <button class="btn btn-mode active" data-mode="mover" id="modeBtnMover">💾 Copiar / Mover local</button>
-          <button class="btn btn-mode" data-mode="ftp" id="modeBtnFtp">📡 Subir por FTP / Switch</button>
+        <div class="mode-switch" role="group" aria-label="Modo">
+          <button type="button" class="btn btn-mode active" data-mode="mover" id="modeBtnMover" aria-pressed="true">💾 <span class="mode-long">Copiar / Mover</span> local</button>
+          <button type="button" class="btn btn-mode" data-mode="ftp" id="modeBtnFtp" aria-pressed="false">📡 <span class="mode-long">Subir por</span> FTP / Switch</button>
         </div>
 
         <div class="inline-group" id="exploreMoverOpGroup">
           <span class="muted">Acción:</span>
-          <div class="segmented">
-            <button type="button" class="btn btn-sm active" id="opBtnCopiar" data-op="copiar">📋 Copiar</button>
-            <button type="button" class="btn btn-sm" id="opBtnMover" data-op="mover">✂️ Mover</button>
+          <div class="segmented" role="group" aria-label="Acción">
+            <button type="button" class="btn btn-sm active" id="opBtnCopiar" data-op="copiar" aria-pressed="true">📋 Copiar</button>
+            <button type="button" class="btn btn-sm" id="opBtnMover" data-op="mover" aria-pressed="false">✂️ Mover</button>
           </div>
         </div>
 
-        <div class="inline-group">
-          <label class="chk-inline" title="Si se activa, ignora la carpeta derecha y usa el destino automático de Configuración">
-            <input type="checkbox" id="chkAutoDest"> Usar destino automático (config)
-          </label>
-        </div>
+        <label class="chk-inline" title="Si se activa, ignora la carpeta derecha y usa el destino automático de Ajustes">
+          <input type="checkbox" id="chkAutoDest"> Destino automático (ajustes)
+        </label>
       </div>
 
-      <div class="mobile-pane-switch" id="mobilePaneSwitch">
-        <button type="button" class="btn btn-mode active" data-mpane="src" id="mPaneBtnSrc">
+      <div class="mobile-pane-switch" id="mobilePaneSwitch" role="group" aria-label="Panel visible">
+        <button type="button" class="btn btn-mode active" data-mpane="src" id="mPaneBtnSrc" aria-pressed="true">
           📂 Origen <span class="badge-pill" id="mPaneSrcCount">0</span>
         </button>
-        <button type="button" class="btn btn-mode" data-mpane="dst" id="mPaneBtnDst">
-          🎯 Destino: <span class="mpane-dst-path" id="mPaneDstLabel">-</span>
+        <button type="button" class="btn btn-mode" data-mpane="dst" id="mPaneBtnDst" aria-pressed="false">
+          🎯 <span class="mpane-dst-path" id="mPaneDstLabel">-</span>
         </button>
       </div>
 
@@ -107,95 +136,110 @@
         <!-- PANEL IZQUIERDO: ORIGEN -->
         <div class="pane" id="srcPane">
           <div class="pane-head">
-            <div>
-              <span class="pane-title">📂 Origen (Servidor)</span>
+            <div class="pane-title-wrap">
+              <span class="pane-title">📂 Origen</span>
               <span class="disk-info" id="srcDiskInfo"></span>
             </div>
             <div class="inline-group">
               <label class="chk-inline"><input type="checkbox" id="chkShowHidden"> Ocultos</label>
-              <button class="btn btn-sm" id="btnSrcNewDir">+ Carpeta</button>
+              <button type="button" class="btn btn-sm" id="btnSrcNewDir">+ Carpeta</button>
             </div>
           </div>
 
           <div class="bookmarks-bar" id="srcBookmarks"></div>
-          <div class="breadcrumbs" id="srcBreadcrumbs"></div>
+          <div class="pathbar" id="srcPathbar">
+            <button type="button" class="btn btn-sm btn-icon" id="btnSrcUp" aria-label="Subir a la carpeta superior" title="Subir carpeta">⬆</button>
+            <nav class="breadcrumbs" id="srcBreadcrumbs" aria-label="Ruta de origen"></nav>
+            <input type="text" class="path-input hidden" id="srcPathInput" aria-label="Escribir ruta de origen" spellcheck="false" autocomplete="off">
+            <button type="button" class="btn btn-sm btn-icon" id="btnSrcEditPath" aria-label="Editar ruta de origen" title="Escribir ruta">✎</button>
+          </div>
 
-          <div class="path-nav">
-            <button class="btn btn-sm" id="btnSrcUp" title="Subir carpeta">⬆</button>
-            <input type="text" id="srcPathInput" class="path-input" aria-label="Ruta origen">
-            <button class="btn btn-sm" id="btnSrcGo">Ir</button>
-            <input type="search" id="fsFilter" class="filter-input" placeholder="Filtrar...">
+          <div class="filter-row">
+            <input type="search" id="fsFilter" class="filter-input" placeholder="Filtrar…" aria-label="Filtrar origen">
+            <label class="chk-inline" title="Buscar también dentro de las subcarpetas">
+              <input type="checkbox" id="chkRecursive"> En subcarpetas
+            </label>
           </div>
 
           <div class="batch-bar" id="srcBatchBar">
             <div class="inline-group">
-              <button class="btn btn-sm" id="btnSelectAll">☑ Todo</button>
-              <button class="btn btn-sm btn-ghost" id="btnSelectNone">Ninguno</button>
-              <button class="btn btn-sm btn-danger" id="btnDeleteSelected" title="Eliminar del servidor los seleccionados">🗑 Borrar</button>
-              <span class="muted" id="selectionSummary">0 seleccionados</span>
+              <button type="button" class="btn btn-sm" id="btnSelectAll">☑ Todo</button>
+              <button type="button" class="btn btn-sm btn-ghost" id="btnSelectNone">Ninguno</button>
+              <span class="muted" id="selectionSummary" aria-live="polite">0 seleccionados</span>
             </div>
-            <div class="inline-group">
-              <button class="btn btn-sm btn-primary" id="btnAddSelected">➕ A la cola →</button>
-              <button class="btn btn-sm btn-green" id="btnSendAndStart">⚡ Enviar e iniciar</button>
-              <button class="btn btn-sm btn-accent hidden" id="btnAddSwitchOnly">🎮 Solo Switch</button>
+            <div class="inline-group batch-actions">
+              <button type="button" class="btn btn-sm btn-primary" id="btnAddSelected">➕ A la cola →</button>
+              <button type="button" class="btn btn-sm btn-green" id="btnSendAndStart">⚡ Enviar e iniciar</button>
+              <button type="button" class="btn btn-sm btn-accent hidden" id="btnAddSwitchOnly">🎮 Solo Switch</button>
+              <button type="button" class="btn btn-sm btn-accent hidden" id="btnAddGame" title="Encola base, actualizaciones y DLC en orden">🎮 Juego completo</button>
+              <button type="button" class="btn btn-sm btn-danger" id="btnDeleteSelected" disabled>🗑 Borrar…</button>
             </div>
           </div>
 
           <div class="table-wrap pane-table">
-            <table class="data-table fs-table">
+            <table class="data-table fs-table" aria-describedby="srcBreadcrumbs">
               <thead>
                 <tr>
-                  <th style="width:34px"><input type="checkbox" id="chkHeaderAll"></th>
-                  <th>Nombre</th>
-                  <th style="width:95px">Estado</th>
-                  <th style="width:105px">Tamaño</th>
-                  <th style="width:185px">Acciones</th>
+                  <th class="col-chk"><label class="chk-hit"><input type="checkbox" id="chkHeaderAll" aria-label="Seleccionar todo"></label></th>
+                  <th class="col-name" aria-sort="none"><button type="button" class="th-sort" data-sort="name">Nombre <span class="sort-ind" aria-hidden="true"></span></button></th>
+                  <th class="col-mtime" aria-sort="none"><button type="button" class="th-sort" data-sort="mtime">Modificado <span class="sort-ind" aria-hidden="true"></span></button></th>
+                  <th class="col-size" aria-sort="none"><button type="button" class="th-sort" data-sort="size">Tamaño <span class="sort-ind" aria-hidden="true"></span></button></th>
+                  <th class="col-actions"><span class="sr-only">Acciones</span></th>
                 </tr>
               </thead>
               <tbody id="fsTableBody"></tbody>
             </table>
+          </div>
+          <div class="mobile-sort" id="mobileSort">
+            <label>Ordenar:
+              <select id="mobileSortSelect" aria-label="Ordenar">
+                <option value="name:asc">Nombre (A-Z)</option>
+                <option value="name:desc">Nombre (Z-A)</option>
+                <option value="mtime:desc">Más recientes</option>
+                <option value="mtime:asc">Más antiguos</option>
+                <option value="size:desc">Más grandes</option>
+                <option value="size:asc">Más pequeños</option>
+              </select>
+            </label>
           </div>
         </div>
 
         <!-- PANEL DERECHO: DESTINO -->
         <div class="pane" id="dstPane">
           <div class="pane-head">
-            <div>
-              <span class="pane-title" id="dstPaneTitle">🎯 Destino (Carpeta donde se guardará)</span>
+            <div class="pane-title-wrap">
+              <span class="pane-title" id="dstPaneTitle">🎯 Destino</span>
               <span class="disk-info" id="dstDiskInfo"></span>
             </div>
             <div class="inline-group">
-              <button class="btn btn-sm" id="btnDstRefresh" title="Actualizar destino">🔄</button>
-              <button class="btn btn-sm" id="btnDstNewDir">+ Carpeta</button>
+              <button type="button" class="btn btn-sm btn-icon" id="btnDstRefresh" aria-label="Actualizar destino" title="Actualizar destino">🔄</button>
+              <button type="button" class="btn btn-sm" id="btnDstFav" title="Añadir esta carpeta a favoritos">★ Favorito</button>
+              <button type="button" class="btn btn-sm" id="btnDstNewDir">+ Carpeta</button>
             </div>
           </div>
 
           <div id="dstAutoNotice" class="banner hidden">
-            Modo <strong>Destino automático</strong> activado: se usará la ruta por defecto de Configuración (manteniendo o no subcarpetas según tus ajustes). Desmarca la casilla superior para elegir aquí la carpeta exacta.
+            <strong>Destino automático</strong>: se usará la ruta por defecto de Ajustes. Desmarca la casilla superior para elegir aquí la carpeta exacta.
           </div>
 
           <div id="dstNavigator" class="dst-navigator">
             <div class="bookmarks-bar" id="dstBookmarks"></div>
-            <div class="breadcrumbs" id="dstBreadcrumbs"></div>
-
-            <div class="path-nav">
-              <button class="btn btn-sm" id="btnDstUp" title="Subir carpeta">⬆</button>
-              <input type="text" id="dstPathInput" class="path-input" aria-label="Ruta destino">
-              <button class="btn btn-sm" id="btnDstGo">Ir</button>
-              <input type="search" id="dstFilter" class="filter-input" placeholder="Filtrar...">
+            <div class="pathbar" id="dstPathbar">
+              <button type="button" class="btn btn-sm btn-icon" id="btnDstUp" aria-label="Subir a la carpeta superior del destino" title="Subir carpeta">⬆</button>
+              <nav class="breadcrumbs" id="dstBreadcrumbs" aria-label="Ruta de destino"></nav>
+              <input type="text" class="path-input hidden" id="dstPathInput" aria-label="Escribir ruta de destino" spellcheck="false" autocomplete="off">
+              <button type="button" class="btn btn-sm btn-icon" id="btnDstEditPath" aria-label="Editar ruta de destino" title="Escribir ruta">✎</button>
             </div>
-
-            <div class="dst-target-pill">
-              <span class="muted">Destino activo:</span>
-              <code id="dstActiveLabel">-</code>
+            <div class="filter-row">
+              <input type="search" id="dstFilter" class="filter-input" placeholder="Filtrar…" aria-label="Filtrar destino">
             </div>
 
             <div class="table-wrap pane-table">
-              <table class="data-table">
+              <table class="data-table dst-table">
                 <thead>
                   <tr>
                     <th>Contenido en destino</th>
-                    <th style="width:105px">Tamaño</th>
+                    <th class="col-size">Tamaño</th>
                   </tr>
                 </thead>
                 <tbody id="dstTableBody"></tbody>
@@ -207,57 +251,120 @@
     </section>
 
     <!-- TAB: COLAS -->
-    <section class="tab-panel" id="tab-queue">
+    <section class="tab-panel" id="tab-queue" aria-label="Colas">
       <div class="toolbar">
-        <div class="mode-switch">
-          <button class="btn btn-mode active" data-qkind="mover" id="qTabMover">💾 Cola Mover</button>
-          <button class="btn btn-mode" data-qkind="ftp" id="qTabFtp">📡 Cola FTP</button>
+        <div class="mode-switch" role="group" aria-label="Cola">
+          <button type="button" class="btn btn-mode active" data-qkind="mover" id="qTabMover" aria-pressed="true">💾 Cola Mover</button>
+          <button type="button" class="btn btn-mode" data-qkind="ftp" id="qTabFtp" aria-pressed="false">📡 Cola FTP</button>
         </div>
-        <div class="inline-group">
+        <div class="inline-group queue-tools">
           <label class="chk-inline"><input type="checkbox" id="chkOnlyPending"> Solo activos</label>
-          <button class="btn btn-sm" id="btnQueueChangeDest">📂 Cambiar destino</button>
-          <button class="btn btn-sm" id="btnQueueAutoOrder">↕ Auto-ordenar</button>
-          <button class="btn btn-sm" id="btnQueueRetry">↻ Reintentar errores</button>
-          <button class="btn btn-sm btn-ghost" id="btnQueueClearOk">🧹 Limpiar OK</button>
-          <button class="btn btn-sm btn-ghost" id="btnQueueClearErr">🧹 Limpiar ERR</button>
-          <button class="btn btn-sm btn-danger" id="btnQueueClearPend">🗑 Vaciar pendientes</button>
+          <button type="button" class="btn btn-sm desk-only" id="btnQueueChangeDest">📂 Cambiar destino</button>
+          <button type="button" class="btn btn-sm desk-only" id="btnQueueAutoOrder">↕ Auto-ordenar</button>
+          <button type="button" class="btn btn-sm desk-only" id="btnQueueRetry">↻ Reintentar errores</button>
+          <button type="button" class="btn btn-sm btn-ghost desk-only" id="btnQueueClearOk">🧹 Limpiar OK</button>
+          <button type="button" class="btn btn-sm btn-ghost desk-only" id="btnQueueClearErr">🧹 Limpiar ERR</button>
+          <button type="button" class="btn btn-sm btn-danger desk-only" id="btnQueueClearPend">Vaciar pendientes…</button>
+          <button type="button" class="btn btn-sm mob-only" id="btnQueueMore" aria-haspopup="menu" aria-expanded="false">⋯ Acciones de la cola</button>
         </div>
       </div>
 
+      <div class="queue-summary card hidden" id="queueSummary" aria-live="polite">
+        <div class="qs-row">
+          <strong id="qsText">—</strong>
+          <span class="muted" id="qsExtra"></span>
+        </div>
+        <div class="progress-bar thin"><div class="progress-fill" id="qsFill"></div></div>
+      </div>
+
+      <ol class="queue-list" id="queueList" aria-label="Elementos en cola"></ol>
+      <div class="card hidden" id="queueEmpty"></div>
+    </section>
+
+    <!-- TAB: HISTORIAL -->
+    <section class="tab-panel" id="tab-history" aria-label="Historial">
+      <div class="toolbar">
+        <div class="inline-group">
+          <label>Mostrar:
+            <select id="historyKind">
+              <option value="">Todo</option>
+              <option value="mover">Mover / Copiar</option>
+              <option value="ftp">FTP / Switch</option>
+            </select>
+          </label>
+          <button type="button" class="btn btn-sm" id="btnHistoryRefresh">↻ Actualizar</button>
+        </div>
+        <button type="button" class="btn btn-sm btn-danger" id="btnHistoryClear">Borrar historial…</button>
+      </div>
       <div class="table-wrap">
-        <table class="data-table queue-table">
+        <table class="data-table history-table">
           <thead>
             <tr>
-              <th style="width:55px">#</th>
-              <th style="width:95px">Estado</th>
-              <th style="width:90px">Tipo</th>
-              <th>Origen → Destino</th>
-              <th style="width:100px">Tamaño</th>
-              <th style="width:230px">Controles</th>
+              <th>Fecha</th>
+              <th>Elemento</th>
+              <th>Tamaño</th>
+              <th>Duración</th>
+              <th>Vel. media</th>
+              <th>Estado</th>
             </tr>
           </thead>
-          <tbody id="queueTableBody"></tbody>
+          <tbody id="historyBody"></tbody>
+        </table>
+      </div>
+      <div class="list-foot">
+        <span class="muted" id="historyCount"></span>
+        <button type="button" class="btn btn-sm hidden" id="btnHistoryMore">Cargar más</button>
+      </div>
+    </section>
+
+    <!-- TAB: PAPELERA -->
+    <section class="tab-panel" id="tab-trash" aria-label="Papelera">
+      <div class="toolbar">
+        <div class="inline-group">
+          <button type="button" class="btn btn-sm" id="btnTrashRefresh">↻ Actualizar</button>
+          <button type="button" class="btn btn-sm btn-primary" id="btnTrashRestore" disabled>↩ Restaurar seleccionados</button>
+          <span class="muted" id="trashInfo"></span>
+          <button type="button" class="btn btn-sm" id="btnTrashToggle" hidden></button>
+        </div>
+        <div class="inline-group">
+          <button type="button" class="btn btn-sm btn-danger" id="btnTrashDeleteSel" disabled>Eliminar seleccionados…</button>
+          <button type="button" class="btn btn-sm btn-danger" id="btnTrashEmpty">Vaciar papelera…</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table trash-table">
+          <thead>
+            <tr>
+              <th class="col-chk"><label class="chk-hit"><input type="checkbox" id="chkTrashAll" aria-label="Seleccionar todo"></label></th>
+              <th>Elemento</th>
+              <th>Tamaño</th>
+              <th>Borrado</th>
+              <th>Se elimina</th>
+            </tr>
+          </thead>
+          <tbody id="trashBody"></tbody>
         </table>
       </div>
     </section>
 
     <!-- TAB: CONFIGURACIÓN -->
-    <section class="tab-panel" id="tab-config">
-      <form id="settingsForm" class="config-grid">
+    <section class="tab-panel" id="tab-config" aria-label="Ajustes">
+      <div class="save-indicator" id="cfgSaveState" role="status" aria-live="polite">Los cambios se guardan automáticamente</div>
+      <form id="settingsForm" class="config-grid" novalidate>
         <div class="card">
-          <h2>💾 Configuración de Mover / Copiar</h2>
+          <h2>💾 Mover / Copiar</h2>
           <div class="form-grid">
             <label>Carpeta origen inicial
-              <div class="input-with-btn">
-                <input type="text" name="mover_origin" id="cfgMoverOrigin">
-                <button type="button" class="btn btn-sm" data-browse-input="cfgMoverOrigin">📂</button>
-              </div>
+              <span class="input-with-btn">
+                <input type="text" name="mover_origin" id="cfgMoverOrigin" spellcheck="false">
+                <button type="button" class="btn btn-sm btn-icon" data-browse-input="cfgMoverOrigin" aria-label="Elegir carpeta origen inicial">📂</button>
+              </span>
             </label>
             <label>Carpeta destino por defecto
-              <div class="input-with-btn">
-                <input type="text" name="mover_dest" id="cfgMoverDest">
-                <button type="button" class="btn btn-sm" data-browse-input="cfgMoverDest">📂</button>
-              </div>
+              <span class="input-with-btn">
+                <input type="text" name="mover_dest" id="cfgMoverDest" spellcheck="false">
+                <button type="button" class="btn btn-sm btn-icon" data-browse-input="cfgMoverDest" aria-label="Elegir carpeta destino por defecto">📂</button>
+              </span>
             </label>
             <label>Operación por defecto
               <select name="mover_operation" id="cfgMoverOp">
@@ -265,7 +372,7 @@
                 <option value="mover">Mover (borra origen al verificar)</option>
               </select>
             </label>
-            <label>Si destino ya existe
+            <label>Si el destino ya existe
               <select name="mover_conflict" id="cfgMoverConflict">
                 <option value="omitir">Omitir</option>
                 <option value="sobrescribir">Sobrescribir</option>
@@ -279,87 +386,126 @@
                 <option value="no">No (al mover siempre verifica tamaño)</option>
               </select>
             </label>
-            <label>Límite velocidad (KB/s, 0 = sin límite)
-              <input type="number" min="0" name="mover_limit_kbps" id="cfgMoverLimit">
+            <label>Límite de velocidad
+              <span class="input-unit">
+                <input type="number" min="0" step="0.1" inputmode="decimal" id="cfgMoverLimitMb" aria-describedby="hintMoverLimit">
+                <span class="unit">MB/s</span>
+              </span>
+              <span class="hint" id="hintMoverLimit">0 = sin límite</span>
             </label>
             <label>Reintentos ante fallo
               <input type="number" min="0" name="mover_retries" id="cfgMoverRetries">
             </label>
-            <label>Espera inicial reintento (s)
-              <input type="number" min="1" name="mover_retry_wait" id="cfgMoverRetryWait">
+            <label>Espera inicial entre reintentos
+              <span class="input-unit">
+                <input type="number" min="1" name="mover_retry_wait" id="cfgMoverRetryWait">
+                <span class="unit">s</span>
+              </span>
             </label>
           </div>
           <label class="chk-block">
             <input type="checkbox" name="mover_keep_structure" id="cfgMoverStruct">
             Mantener estructura de subcarpetas en destino automático
           </label>
-          <label class="field-full">Carpetas destino favoritas (una ruta por línea)
-            <textarea name="mover_favorites" id="cfgMoverFavs" rows="3" placeholder="/host/mnt/peliculas"></textarea>
-          </label>
+
+          <h3 class="subhead">★ Carpetas destino favoritas</h3>
+          <ul class="fav-list" id="favList" aria-label="Carpetas favoritas"></ul>
+          <div class="inline-group">
+            <button type="button" class="btn btn-sm" id="btnFavAdd">+ Añadir carpeta…</button>
+            <span class="muted">También puedes usar «★ Favorito» en el panel de destino del explorador.</span>
+          </div>
         </div>
 
         <div class="card">
           <div class="card-header-row">
-            <h2>📡 Configuración FTP / Nintendo Switch</h2>
+            <h2>📡 FTP / Nintendo Switch</h2>
             <div class="inline-group">
               <button type="button" class="btn btn-sm btn-accent" id="btnScanSwitch">🔍 Buscar Switch</button>
               <button type="button" class="btn btn-sm" id="btnTestFtp">🔌 Probar conexión</button>
             </div>
           </div>
 
-          <div id="switchScanResults" class="scan-results hidden"></div>
-          <div id="ftpTestBanner" class="banner hidden"></div>
+          <div id="switchScanResults" class="scan-results hidden" aria-live="polite"></div>
+          <div id="ftpTestBanner" class="banner hidden" role="status"></div>
 
+          <h3 class="subhead">Conexión</h3>
           <div class="form-grid">
-            <label>Servidor / IP FTP
-              <input type="text" name="ftp_host" id="cfgFtpHost" placeholder="192.168.1.50">
+            <label>Servidor / IP
+              <input type="text" name="ftp_host" id="cfgFtpHost" placeholder="192.168.1.50" spellcheck="false">
             </label>
             <label>Puerto
               <input type="number" min="1" max="65535" name="ftp_port" id="cfgFtpPort">
             </label>
-            <label>Usuario (vacío = anónimo)
+            <label><span class="lbl-row">Usuario <span class="hint">vacío = anónimo</span></span>
               <input type="text" name="ftp_user" id="cfgFtpUser" autocomplete="off">
             </label>
-            <label>Contraseña <span class="muted" id="cfgFtpPwHint"></span>
+            <label><span class="lbl-row">Contraseña <span class="hint" id="cfgFtpPwHint"></span></span>
               <input type="password" name="ftp_password" id="cfgFtpPassword" placeholder="Dejar vacío para mantener" autocomplete="new-password">
             </label>
+          </div>
+          <div class="chk-list">
+            <label class="chk-block"><input type="checkbox" name="ftp_passive" id="cfgFtpPassive"> Modo pasivo (recomendado)</label>
+            <label class="chk-block"><input type="checkbox" name="ftp_tls" id="cfgFtpTls"> Usar FTPS / TLS explícito</label>
+          </div>
+
+          <h3 class="subhead">Comportamiento</h3>
+          <div class="form-grid">
             <label>Carpeta local inicial
-              <div class="input-with-btn">
-                <input type="text" name="ftp_local_root" id="cfgFtpLocalRoot">
-                <button type="button" class="btn btn-sm" data-browse-input="cfgFtpLocalRoot">📂</button>
-              </div>
+              <span class="input-with-btn">
+                <input type="text" name="ftp_local_root" id="cfgFtpLocalRoot" spellcheck="false">
+                <button type="button" class="btn btn-sm btn-icon" data-browse-input="cfgFtpLocalRoot" aria-label="Elegir carpeta local inicial">📂</button>
+              </span>
             </label>
             <label>Carpeta remota por defecto
-              <input type="text" name="ftp_remote_dir" id="cfgFtpRemoteDir" placeholder="/">
+              <input type="text" name="ftp_remote_dir" id="cfgFtpRemoteDir" placeholder="/" spellcheck="false">
             </label>
-            <label>Límite subida (KB/s, 0 = sin límite)
-              <input type="number" min="0" name="ftp_limit_kbps" id="cfgFtpLimit">
+            <label>Límite de subida
+              <span class="input-unit">
+                <input type="number" min="0" step="0.1" inputmode="decimal" id="cfgFtpLimitMb" aria-describedby="hintFtpLimit">
+                <span class="unit">MB/s</span>
+              </span>
+              <span class="hint" id="hintFtpLimit">0 = sin límite</span>
             </label>
             <label>Reintentos ante fallo de red
               <input type="number" min="0" name="ftp_retries" id="cfgFtpRetries">
             </label>
-            <label>Espera inicial reintento (s)
-              <input type="number" min="1" name="ftp_retry_wait" id="cfgFtpRetryWait">
+            <label>Espera inicial entre reintentos
+              <span class="input-unit">
+                <input type="number" min="1" name="ftp_retry_wait" id="cfgFtpRetryWait">
+                <span class="unit">s</span>
+              </span>
             </label>
           </div>
-
           <div class="chk-list">
-            <label class="chk-block"><input type="checkbox" name="ftp_keep_structure" id="cfgFtpStruct"> Mantener estructura de carpetas en servidor</label>
-            <label class="chk-block"><input type="checkbox" name="ftp_passive" id="cfgFtpPassive"> Modo pasivo (recomendado)</label>
-            <label class="chk-block"><input type="checkbox" name="ftp_tls" id="cfgFtpTls"> Usar FTPS / TLS explícito</label>
-            <label class="chk-block"><input type="checkbox" name="ftp_verify_size" id="cfgFtpVerifySize"> Verificar tamaño final en servidor (desactivar para Switch / DBI)</label>
+            <label class="chk-block"><input type="checkbox" name="ftp_keep_structure" id="cfgFtpStruct"> Mantener estructura de carpetas en el servidor</label>
+            <label class="chk-block"><input type="checkbox" name="ftp_verify_size" id="cfgFtpVerifySize"> Verificar tamaño final en el servidor (desactivar para Switch / DBI)</label>
           </div>
         </div>
 
-        <div class="config-footer">
-          <button type="submit" class="btn btn-primary">💾 Guardar configuración</button>
-          <span class="muted" id="cfgSaveMsg"></span>
+        <div class="card">
+          <h2>🗑 Papelera y apariencia</h2>
+          <div class="form-grid">
+            <label class="chk-block" id="cfgTrashEnabledWrap"><input type="checkbox" name="trash_enabled" id="cfgTrashEnabled"> Usar papelera (si la desactivas, los borrados son definitivos)</label>
+            <label id="cfgTrashDaysWrap">Días en la papelera antes de borrar
+              <span class="input-unit">
+                <input type="number" min="1" max="365" name="trash_days" id="cfgTrashDays">
+                <span class="unit">días</span>
+              </span>
+            </label>
+            <label>Tema
+              <select id="cfgTheme">
+                <option value="auto">Automático (sistema)</option>
+                <option value="light">Claro</option>
+                <option value="dark">Oscuro</option>
+              </select>
+            </label>
+          </div>
         </div>
       </form>
     </section>
 
     <!-- TAB: LOGS -->
-    <section class="tab-panel" id="tab-logs">
+    <section class="tab-panel" id="tab-logs" aria-label="Registro">
       <div class="toolbar">
         <div class="inline-group">
           <label>Filtro:
@@ -370,19 +516,17 @@
               <option value="sistema">Sistema</option>
             </select>
           </label>
-          <button class="btn btn-sm" id="btnRefreshLogs">↻ Actualizar</button>
+          <button type="button" class="btn btn-sm" id="btnRefreshLogs">↻ Actualizar</button>
         </div>
-        <button class="btn btn-sm btn-danger" id="btnClearLogs">🗑 Vaciar registro</button>
+        <button type="button" class="btn btn-sm btn-danger" id="btnClearLogs">Vaciar registro…</button>
       </div>
       <div class="log-box" id="logBox"></div>
     </section>
 
     <!-- TAB: GUÍA / README -->
-    <section class="tab-panel" id="tab-readme">
+    <section class="tab-panel" id="tab-readme" aria-label="Guía">
       <div class="toolbar">
-        <div class="inline-group">
-          <strong>📖 Documentación completa (Web + Comandos SSH / CLI)</strong>
-        </div>
+        <strong>📖 Documentación (Web + Comandos SSH / CLI)</strong>
         <div class="inline-group">
           <button type="button" class="btn btn-sm" id="btnReadmeTop">⬆ Arriba</button>
           <button type="button" class="btn btn-sm" id="btnRefreshReadme">↻ Recargar</button>
@@ -390,37 +534,95 @@
       </div>
       <div class="card readme-card">
         <article class="readme-body" id="readmeBody">
-          <p class="muted">Cargando documentación...</p>
+          <p class="muted">Cargando documentación…</p>
         </article>
       </div>
     </section>
   </main>
 
-  <!-- MODAL EXPLORADOR CARPETAS (PARA CONFIGURACIÓN) -->
-  <div class="modal hidden" id="pickerModal">
-    <div class="modal-card">
+  <!-- NAVEGACIÓN INFERIOR (MÓVIL) -->
+  <nav class="bottom-nav" id="bottomNav" aria-label="Secciones">
+    <button type="button" class="bn-item active" data-tab="explore"><span class="bn-icon" aria-hidden="true">📁</span><span>Explorar</span></button>
+    <button type="button" class="bn-item" data-tab="queue"><span class="bn-icon" aria-hidden="true">📋<span class="bn-badge hidden" data-queue-badge>0</span></span><span>Colas</span></button>
+    <button type="button" class="bn-item" data-tab="config"><span class="bn-icon" aria-hidden="true">⚙️</span><span>Ajustes</span></button>
+    <button type="button" class="bn-item" id="bnMore" aria-haspopup="dialog" aria-expanded="false"><span class="bn-icon" aria-hidden="true">☰</span><span>Más</span></button>
+  </nav>
+
+  <!-- HOJA "MÁS" (MÓVIL) -->
+  <div class="modal hidden" id="moreSheet" role="dialog" aria-modal="true" aria-labelledby="moreSheetTitle">
+    <div class="modal-card sheet">
       <div class="modal-head">
-        <h3 id="pickerTitle">Elegir carpeta</h3>
-        <button type="button" class="btn btn-sm btn-ghost" id="btnPickerClose">✕</button>
+        <h3 id="moreSheetTitle">Más opciones</h3>
+        <button type="button" class="btn btn-sm btn-ghost btn-icon" data-close-modal aria-label="Cerrar">✕</button>
       </div>
-      <div class="picker-shortcuts" id="pickerShortcuts"></div>
-      <div class="breadcrumbs" id="pickerBreadcrumbs"></div>
-      <div class="path-nav modal-path-nav">
-        <button type="button" class="btn btn-sm" id="btnPickerUp">⬆ Subir</button>
-        <input type="text" id="pickerPathInput" class="path-input">
-        <button type="button" class="btn btn-sm" id="btnPickerGo">Ir</button>
-        <button type="button" class="btn btn-sm" id="btnPickerNewDir">+ Carpeta</button>
+      <div class="sheet-grid">
+        <button type="button" class="btn sheet-item" data-tab="history">🕘 Historial</button>
+        <button type="button" class="btn sheet-item" data-tab="trash">🗑 Papelera</button>
+        <button type="button" class="btn sheet-item" data-tab="logs">📜 Registro</button>
+        <button type="button" class="btn sheet-item" data-tab="readme">📖 Guía</button>
       </div>
-      <div class="picker-list" id="pickerList"></div>
-      <div class="modal-foot">
-        <button type="button" class="btn btn-primary" id="btnPickerUse">✓ Usar esta carpeta</button>
-        <button type="button" class="btn btn-ghost" id="btnPickerCancel">Cancelar</button>
+      <div class="sheet-theme">
+        <span class="muted">Tema</span>
+        <div class="segmented" role="group" aria-label="Tema">
+          <button type="button" class="btn btn-sm" data-theme-set="auto">🖥 Auto</button>
+          <button type="button" class="btn btn-sm" data-theme-set="light">☀️ Claro</button>
+          <button type="button" class="btn btn-sm" data-theme-set="dark">🌙 Oscuro</button>
+        </div>
       </div>
     </div>
   </div>
 
-  <div class="toast hidden" id="toast"></div>
+  <!-- MODAL SELECTOR DE CARPETA -->
+  <div class="modal hidden" id="pickerModal" role="dialog" aria-modal="true" aria-labelledby="pickerTitle">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3 id="pickerTitle">Elegir carpeta</h3>
+        <button type="button" class="btn btn-sm btn-ghost btn-icon" id="btnPickerClose" aria-label="Cerrar">✕</button>
+      </div>
+      <div class="picker-shortcuts bookmarks-bar" id="pickerShortcuts"></div>
+      <div class="pathbar">
+        <button type="button" class="btn btn-sm btn-icon" id="btnPickerUp" aria-label="Subir a la carpeta superior">⬆</button>
+        <nav class="breadcrumbs" id="pickerBreadcrumbs" aria-label="Ruta"></nav>
+        <input type="text" id="pickerPathInput" class="path-input hidden" aria-label="Escribir ruta" spellcheck="false">
+        <button type="button" class="btn btn-sm btn-icon" id="btnPickerEditPath" aria-label="Editar ruta">✎</button>
+        <button type="button" class="btn btn-sm" id="btnPickerNewDir">+ Carpeta</button>
+      </div>
+      <div class="picker-list" id="pickerList"></div>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-ghost" id="btnPickerCancel">Cancelar</button>
+        <button type="button" class="btn btn-primary" id="btnPickerUse">✓ Usar esta carpeta</button>
+      </div>
+    </div>
+  </div>
 
-  <script src="/static/app.js?v=6"></script>
+  <!-- MODAL GENÉRICO (CONFIRMAR / PEDIR TEXTO / INFORMACIÓN) -->
+  <div class="modal hidden" id="dialogModal" role="dialog" aria-modal="true" aria-labelledby="dialogTitle" aria-describedby="dialogBody">
+    <div class="modal-card dialog-card">
+      <div class="modal-head">
+        <h3 id="dialogTitle">Confirmar</h3>
+        <button type="button" class="btn btn-sm btn-ghost btn-icon" id="btnDialogX" aria-label="Cerrar">✕</button>
+      </div>
+      <div class="dialog-body" id="dialogBody"></div>
+      <form class="dialog-input-wrap hidden" id="dialogForm">
+        <label class="dialog-label" for="dialogInput" id="dialogInputLabel">Valor</label>
+        <input type="text" id="dialogInput" spellcheck="false" autocomplete="off">
+        <span class="sub-err hidden" id="dialogInputErr"></span>
+      </form>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-ghost" id="btnDialogCancel">Cancelar</button>
+        <button type="button" class="btn btn-primary" id="btnDialogOk">Aceptar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MENÚ CONTEXTUAL (⋯) -->
+  <div class="pop-menu hidden" id="popMenu" role="menu"></div>
+
+  <div class="toast hidden" id="toast" role="status" aria-live="polite">
+    <span id="toastMsg"></span>
+    <button type="button" class="btn btn-sm hidden" id="toastAction">Deshacer</button>
+  </div>
+
+  <script src="/static/app.js?v=7"></script>
 </body>
 </html>

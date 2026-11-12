@@ -52,6 +52,9 @@ Uso:
       web iniciar <mover|ftp>       Arranca el worker web de mover o ftp
       web parar <mover|ftp>         Detiene limpiamente el worker web
       web logs [tipo] [N]           Últimos N logs (todos|mover|ftp|sistema)
+      web historial [tipo] [N]      Últimas N transferencias terminadas (todos|mover|ftp)
+      web papelera                  Lista la papelera (restaurar: toolbox mover --restaurar ID)
+      web espacio                   Espacio libre en la SD de la Switch (si el FTP lo soporta)
       web buscar-switch             Escanea la LAN buscando Switch desde el servidor
   toolbox estado                    Resumen combinado de CLI + Web
   toolbox readme                    Muestra el README completo en terminal
@@ -62,6 +65,11 @@ Ejemplos rápidos dentro del contenedor:
   docker exec -it toolbox toolbox mover -m -i -d /host/mnt/destino /host/home/peli.mkv
   docker exec -it toolbox toolbox ftp -s -j -d /install /host/home/juegos/
   docker exec -it toolbox toolbox ftp --buscar-switch
+  docker exec -it toolbox toolbox ftp --juego /host/home/juegos/Zelda -d /install -s
+  docker exec -it toolbox toolbox mover --buscar "dune" /host/home/Descargas
+  docker exec -it toolbox toolbox mover --listar /host/home/Descargas --orden fecha --desc
+  docker exec -it toolbox toolbox mover --papelera
+  docker exec -it toolbox toolbox web historial ftp 20
   docker exec -it toolbox toolbox web estado
   docker exec -it toolbox toolbox web logs mover 30
   docker exec -it toolbox toolbox readme
@@ -87,7 +95,7 @@ web_cmd() {
         estado | status)
             local json
             json=$(_web_api GET "/api/status") || { echo "No se pudo conectar con la Web en $WEB_BASE"; return 1; }
-            printf '%s' "$json" | python3 -c '
+            printf '%s' "$json" | python3 -c "$(cat << 'PY'
 import json, sys
 d = json.load(sys.stdin)
 for kind in ("mover", "ftp"):
@@ -95,26 +103,35 @@ for kind in ("mover", "ftp"):
     c = w.get("counts", {})
     pend = c.get("PEND", 0) + c.get("REAN", 0) + c.get("PROC", 0)
     st = "DETENIENDO" if w.get("stopping") else ("EN EJECUCION" if w.get("running") else "DETENIDO")
-    print(f"  [{kind.upper()}] {st} | Pendientes: {pend} ({w.get(\"pending_bytes\", 0)} B) | Pausados: {c.get(\"PAUS\", 0)} | OK: {c.get(\"OK\", 0)} | ERR: {c.get(\"ERR\", 0)}")
+    print(f"  [{kind.upper()}] {st} | Pendientes: {pend} ({w.get('pending_bytes', 0)} B) | Pausados: {c.get('PAUS', 0)} | OK: {c.get('OK', 0)} | ERR: {c.get('ERR', 0)}")
+    if kind == "ftp" and w.get("remote_free_bytes") is not None:
+        print(f"     Espacio libre en la SD: {w['remote_free_bytes']} B")
     p = w.get("progress") or {}
-    if w.get("running") and p.get("filename"):
-        print(f"     -> {p[\"filename\"]}: {p.get(\"percent\", 0):.1f}% | {p.get(\"speed\", \"--\")} | ETA {p.get(\"eta\", \"--\")}")
-'
+    if w.get("running") and w.get("phase") == "preparing":
+        print(f"     -> Preparando {p.get('filename', '')}")
+    elif w.get("running") and p.get("filename"):
+        print(f"     -> {p['filename']}: {p.get('percent', 0):.1f}% | {p.get('speed', '--')} | ETA {p.get('eta', '--')}")
+    a = w.get("aggregate") or {}
+    if w.get("running") and a.get("total_items"):
+        print(f"     Global: {a.get('done_items', 0)}/{a['total_items']} archivo(s) | {a.get('done_bytes', 0)}/{a.get('total_bytes', 0)} B")
+PY
+)"
             ;;
         cola | queue)
             local kind="${1:-mover}" json
             [[ $kind == mover || $kind == ftp ]] || { echo "Uso: toolbox web cola [mover|ftp]"; return 1; }
             json=$(_web_api GET "/api/queue?kind=${kind}&only_pending=false") || { echo "Web no accesible en $WEB_BASE"; return 1; }
-            printf '%s' "$json" | python3 -c '
+            printf '%s' "$json" | python3 -c "$(cat << 'PY'
 import json, sys
 items = json.load(sys.stdin).get("items", [])
 if not items:
     print("  (cola vacía)")
 for idx, it in enumerate(items, 1):
-    sw = f"[{it[\"switch_type\"]}] " if it.get("switch_type") else ""
-    err = f" | ERR: {it[\"error\"]}" if it.get("error") else ""
-    print(f"  {idx:3d}. [{it[\"status\"]}] [{it[\"operation\"].upper()}] {sw}{it[\"source_path\"]} -> {it[\"dest_path\"]}{err}")
-'
+    sw = f"[{it['switch_type']}] " if it.get("switch_type") else ""
+    err = f" | ERR: {it['error']}" if it.get("error") else ""
+    print(f"  {idx:3d}. [{it['status']}] [{it['operation'].upper()}] {sw}{it['source_path']} -> {it['dest_path']}{err}")
+PY
+)"
             ;;
         iniciar | start)
             local kind="${1:-}"
@@ -129,32 +146,85 @@ for idx, it in enumerate(items, 1):
         logs | log)
             local kind="${1:-todos}" limit="${2:-40}" json
             json=$(_web_api GET "/api/logs?kind=${kind}&limit=${limit}") || { echo "Web no accesible en $WEB_BASE"; return 1; }
-            printf '%s' "$json" | python3 -c '
+            printf '%s' "$json" | python3 -c "$(cat << 'PY'
 import datetime, json, sys
 logs = json.load(sys.stdin).get("logs", [])
 if not logs:
     print("  (sin registros)")
 for l in reversed(logs):
     ts = datetime.datetime.fromtimestamp(l["ts"]).strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{ts}] [{l[\"kind\"].upper()}] [{l[\"level\"]}] {l[\"message\"]}")
-'
+    print(f"[{ts}] [{l['kind'].upper()}] [{l['level']}] {l['message']}")
+PY
+)"
+            ;;
+        historial | history)
+            local kind="${1:-todos}" limit="${2:-30}" json
+            [[ $kind == todos || $kind == mover || $kind == ftp ]] || { echo "Uso: toolbox web historial [todos|mover|ftp] [N]"; return 1; }
+            [[ $limit =~ ^[0-9]+$ ]] || { echo "Uso: toolbox web historial [todos|mover|ftp] [N]"; return 1; }
+            json=$(_web_api GET "/api/history?kind=${kind}&limit=${limit}") || { echo "Web no accesible en $WEB_BASE"; return 1; }
+            printf '%s' "$json" | python3 -c "$(cat << 'PY'
+import datetime, json, os, sys
+d = json.load(sys.stdin)
+items = d.get("items", [])
+if not items:
+    print("  (historial vacío)")
+for h in items:
+    ts = datetime.datetime.fromtimestamp(h["finished_at"]).strftime("%Y-%m-%d %H:%M")
+    dur = h.get("duration_s") or 0
+    err = f" | {h['error']}" if h.get("error") else ""
+    print(f"  {ts} [{h['kind'].upper()}] [{h['status']}] {os.path.basename(h['src'])} ({h['size']} B, {dur:.0f} s){err}")
+print(f"  Mostrando {len(items)} de {d.get('total', len(items))}")
+PY
+)"
+            ;;
+        papelera | trash)
+            local json
+            json=$(_web_api GET "/api/trash") || { echo "Web no accesible en $WEB_BASE"; return 1; }
+            printf '%s' "$json" | python3 -c "$(cat << 'PY'
+import datetime, json, sys
+d = json.load(sys.stdin)
+items = d.get("items", [])
+if d.get("trash_enabled", True):
+    print(f"Papelera ACTIVADA ({len(items)} elemento(s); se conservan {d.get('trash_days')} día(s))")
+else:
+    print(f"Papelera DESACTIVADA: los borrados son definitivos ({len(items)} elemento(s) antiguos)")
+for t in items:
+    ts = datetime.datetime.fromtimestamp(t["trashed_at"]).strftime("%Y-%m-%d %H:%M")
+    print(f"  #{t['id']} {t['original_path']} ({t['size']} B) borrado {ts}")
+PY
+)"
+            ;;
+        espacio | space)
+            local json
+            json=$(_web_api GET "/api/ftp/space") || { echo "Web no accesible en $WEB_BASE"; return 1; }
+            printf '%s' "$json" | python3 -c "$(cat << 'PY'
+import json, sys
+d = json.load(sys.stdin)
+if not d.get("supported"):
+    print("El servidor FTP no informa del espacio libre." + (f" ({d['error']})" if d.get("error") else ""))
+else:
+    estado = "cabe" if d.get("enough") else "NO CABE"
+    print(f"Libre en la SD: {d['free_bytes']} B | Pendiente: {d['pending_bytes']} B -> {estado}")
+PY
+)"
             ;;
         buscar-switch | scan)
             local json
             json=$(_web_api POST "/api/ftp/scan-switch" "{}") || { echo "Web no accesible en $WEB_BASE"; return 1; }
-            printf '%s' "$json" | python3 -c '
+            printf '%s' "$json" | python3 -c "$(cat << 'PY'
 import json, sys
 res = json.load(sys.stdin)
 found = res.get("found", [])
 if not found:
     print("No se encontró ninguna Switch FTP en subredes:", ", ".join(res.get("prefixes", [])))
 for hit in found:
-    print(f"  {hit[\"ip\"]}:{hit[\"port\"]} -> {hit.get(\"banner\") or \"puerto abierto\"}")
-'
+    print(f"  {hit['ip']}:{hit['port']} -> {hit.get('banner') or 'puerto abierto'}")
+PY
+)"
             ;;
         *)
             echo "Subcomando web desconocido: $sub" >&2
-            echo "Opciones: estado | cola [mover|ftp] | iniciar <mover|ftp> | parar <mover|ftp> | logs [tipo] [N] | buscar-switch" >&2
+            echo "Opciones: estado | cola [mover|ftp] | iniciar <mover|ftp> | parar <mover|ftp> | logs [tipo] [N] | historial [tipo] [N] | papelera | espacio | buscar-switch" >&2
             return 1
             ;;
     esac
@@ -211,6 +281,8 @@ menu_interactivo() {
         printf '  %s4)%s 📜 Ver últimos logs de la Web\n' "$C_BOLD" "$C_RESET"
         printf '  %s5)%s 📖 Leer guía completa (README)\n' "$C_BOLD" "$C_RESET"
         printf '  %s6)%s ❓ Ayuda rápida de comandos CLI\n' "$C_BOLD" "$C_RESET"
+        printf '  %s7)%s 🕘 Historial de transferencias (Web)\n' "$C_BOLD" "$C_RESET"
+        printf '  %s8)%s 🗑  Papelera (Web)\n' "$C_BOLD" "$C_RESET"
         printf '  %s0)%s 🚪 Salir\n' "$C_BOLD" "$C_RESET"
         echo
         printf '  %sDirectorio datos:%s %s\n' "$C_DIM" "$C_RESET" "${DATA_ROOT:-$PWD}"
@@ -236,6 +308,20 @@ menu_interactivo() {
                 echo
                 mostrar_ayuda
                 echo
+                read -r -p "  Pulsa Enter para continuar..." _ || true
+                ;;
+            7)
+                echo
+                web_cmd historial todos 30 || true
+                echo
+                read -r -p "  Pulsa Enter para continuar..." _ || true
+                ;;
+            8)
+                echo
+                web_cmd papelera || true
+                echo
+                printf '  Restaurar: toolbox mover --restaurar ID  ·  Vaciar: toolbox mover --vaciar-papelera\n'
+                printf '  Activar/desactivar: toolbox mover --papelera-activar | --papelera-desactivar\n'
                 read -r -p "  Pulsa Enter para continuar..." _ || true
                 ;;
             0 | q | Q) return 0 ;;

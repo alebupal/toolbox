@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
@@ -13,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import (
     SettingsStore,
+    effective_trash_days,
     get_data_root,
     normalize_remote_path,
     resolve_safe_path,
@@ -20,6 +22,7 @@ from .config import (
 from .db import QueueDB
 from .ftp_worker import list_remote_dirs, test_ftp_connection
 from .models import (
+    AddGameRequest,
     AddQueueRequest,
     ChangeDestRequest,
     DeletePathsRequest,
@@ -28,26 +31,48 @@ from .models import (
     RenameRequest,
     ScanSwitchRequest,
     SettingsUpdateRequest,
+    TrashIdsRequest,
 )
-from .mover_worker import calculate_dir_size, delete_entries, file_signature, rename_entry
+from .mover_worker import calculate_dir_size, file_signature, rename_entry
+from .services import VIRTUAL_ROOT_DIRS, decorate_queue_items, plan_game_upload, search_files
+from .services import list_directory as list_directory_entries
 from .switch_utils import SWITCH_EXTENSIONS, detect_switch_type, scan_switch_ftp, switch_sort_key
+from .trash import TrashError, TrashManager
 from .worker_manager import WorkerManager
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 README_PATH = Path(__file__).resolve().parent.parent / "README.md"
-VIRTUAL_ROOT_DIRS = {"proc", "sys", "dev", "run"}
+TRASH_PURGE_INTERVAL_S = 3600
 
 settings_store = SettingsStore()
 queue_db = QueueDB()
 worker_manager = WorkerManager(queue_db, settings_store)
+trash_manager = TrashManager(queue_db, get_data_root())
+_purge_stop = threading.Event()
+
+
+def _trash_purge_loop() -> None:
+    """Purga periódica de los elementos caducados de la papelera."""
+    while not _purge_stop.is_set():
+        try:
+            purged = trash_manager.purge_expired()
+            if purged:
+                queue_db.add_log("sistema", "INFO", f"Papelera: eliminados {purged} elemento(s) caducados")
+        except Exception as exc:  # pragma: no cover - la purga nunca debe tumbar la app
+            queue_db.add_log("sistema", "WARN", f"Error purgando la papelera: {exc}")
+        _purge_stop.wait(TRASH_PURGE_INTERVAL_S)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     queue_db.add_log("sistema", "INFO", f"Toolbox iniciado (DATA_ROOT={get_data_root()})")
+    _purge_stop.clear()
+    purge_thread = threading.Thread(target=_trash_purge_loop, name="trash-purge", daemon=True)
+    purge_thread.start()
     try:
         yield
     finally:
+        _purge_stop.set()
         worker_manager.stop_all()
         queue_db.close()
 
@@ -149,6 +174,8 @@ def list_directory(
     path: str | None = None,
     kind: Literal["mover", "ftp"] = "mover",
     show_hidden: bool = False,
+    sort: Literal["name", "mtime", "size"] = "name",
+    order: Literal["asc", "desc"] = "asc",
 ) -> dict[str, Any]:
     data_root = get_data_root()
     cfg = settings_store.get()
@@ -164,41 +191,10 @@ def list_directory(
         safe_path = data_root
 
     statuses = queue_db.get_source_statuses(kind)
-    dirs: list[dict[str, Any]] = []
-    files: list[dict[str, Any]] = []
-
     try:
-        with os.scandir(safe_path) as entries:
-            for entry in entries:
-                name = entry.name
-                if not show_hidden and name.startswith("."):
-                    continue
-                if safe_path == data_root and name in VIRTUAL_ROOT_DIRS:
-                    continue
-                full = os.path.join(safe_path, name)
-                try:
-                    is_dir = entry.is_dir(follow_symlinks=True)
-                    if is_dir:
-                        dirs.append({"name": name, "path": full})
-                    elif entry.is_file(follow_symlinks=True):
-                        st = entry.stat(follow_symlinks=True)
-                        files.append(
-                            {
-                                "name": name,
-                                "path": full,
-                                "size_bytes": st.st_size,
-                                "mtime": st.st_mtime,
-                                "switch_type": detect_switch_type(name),
-                                "queue_status": statuses.get(full, ""),
-                            }
-                        )
-                except OSError:
-                    continue
+        dirs, files = list_directory_entries(safe_path, data_root, statuses, show_hidden, sort, order)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=f"Sin permisos para leer {safe_path}") from exc
-
-    dirs.sort(key=lambda d: d["name"].lower())
-    files.sort(key=lambda f: f["name"].lower())
 
     parent = os.path.dirname(safe_path) if safe_path != data_root else None
     return {
@@ -207,9 +203,30 @@ def list_directory(
         "data_root": data_root,
         "bookmarks": _quick_bookmarks(data_root),
         "disk": _disk_free_bytes(safe_path),
+        "sort": sort,
+        "order": order,
         "dirs": dirs,
         "files": files,
     }
+
+
+@app.get("/api/fs/search")
+def api_search(
+    q: str = Query(..., min_length=1, max_length=200),
+    path: str | None = None,
+    kind: Literal["mover", "ftp"] = "mover",
+    limit: int = Query(300, ge=1, le=1000),
+) -> dict[str, Any]:
+    data_root = get_data_root()
+    cfg = settings_store.get()
+    default_start = cfg["ftp_local_root"] if kind == "ftp" else cfg["mover_origin"]
+    try:
+        safe_path = resolve_safe_path(path if path and path.strip() else default_start, data_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not os.path.isdir(safe_path):
+        raise HTTPException(status_code=400, detail=f"No es una carpeta: {safe_path}")
+    return search_files(safe_path, q, data_root, limit=limit)
 
 
 @app.post("/api/fs/mkdir")
@@ -243,16 +260,55 @@ def api_rename_entry(req: RenameRequest) -> dict[str, str]:
 
 
 @app.post("/api/fs/delete")
-def api_delete_entries(req: DeletePathsRequest) -> dict[str, int]:
+def api_delete_entries(req: DeletePathsRequest) -> dict[str, Any]:
+    trash_days = effective_trash_days(settings_store.get())
     try:
-        deleted = delete_entries(req.paths, get_data_root())
-    except ValueError as exc:
+        res = trash_manager.delete(req.paths, trash_days, permanent=req.permanent)
+    except TrashError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"No se pudo eliminar: {exc}") from exc
-    if deleted:
-        queue_db.add_log("sistema", "INFO", f"Eliminados {deleted} elemento(s) del explorador")
-    return {"deleted": deleted}
+    if res["trashed"]:
+        queue_db.add_log("sistema", "INFO", f"Enviados {len(res['trashed'])} elemento(s) a la papelera")
+    if res["deleted"]:
+        queue_db.add_log("sistema", "INFO", f"Eliminados definitivamente {res['deleted']} elemento(s)")
+    return res
+
+
+@app.get("/api/trash")
+def api_list_trash() -> dict[str, Any]:
+    cfg = settings_store.get()
+    return {
+        "items": trash_manager.list(),
+        "trash_days": int(cfg.get("trash_days", 7)),
+        "trash_enabled": effective_trash_days(cfg) > 0,
+    }
+
+
+@app.post("/api/trash/restore")
+def api_restore_trash(req: TrashIdsRequest) -> dict[str, Any]:
+    if not req.ids:
+        raise HTTPException(status_code=400, detail="Indica los elementos a restaurar")
+    try:
+        restored = trash_manager.restore(req.ids)
+    except TrashError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"No se pudo restaurar: {exc}") from exc
+    if restored:
+        queue_db.add_log("sistema", "INFO", f"Restaurados {len(restored)} elemento(s) de la papelera")
+    return {"restored": restored}
+
+
+@app.post("/api/trash/empty")
+def api_empty_trash(req: TrashIdsRequest | None = None) -> dict[str, int]:
+    try:
+        removed = trash_manager.empty(req.ids if req else None)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"No se pudo vaciar la papelera: {exc}") from exc
+    if removed:
+        queue_db.add_log("sistema", "INFO", f"Papelera: eliminados definitivamente {removed} elemento(s)")
+    return {"removed": removed}
 
 
 @app.get("/api/fs/dir-size")
@@ -284,7 +340,7 @@ def list_queue(
     only_pending: bool = False,
 ) -> dict[str, Any]:
     items = queue_db.list_items(kind=kind, only_pending=only_pending)
-    return {"items": items}
+    return {"items": decorate_queue_items(items, settings_store.get(), get_data_root())}
 
 
 @app.post("/api/queue/add")
@@ -544,6 +600,65 @@ def api_scan_switch(req: ScanSwitchRequest | None = None) -> dict[str, Any]:
         f"Escaneo Switch LAN en subredes {res['prefixes']} puertos {res['ports']}: {len(res['found'])} encontrado(s)",
     )
     return res
+
+
+@app.get("/api/ftp/space")
+def api_ftp_space() -> dict[str, Any]:
+    space = worker_manager.refresh_ftp_space()
+    pending = worker_manager.status()["ftp"]["pending_bytes"]
+    free = space.get("free_bytes") if space.get("supported") else None
+    res: dict[str, Any] = {
+        "supported": bool(space.get("supported")),
+        "free_bytes": free,
+        "pending_bytes": pending,
+        "enough": (free >= pending) if free is not None else None,
+        "method": space.get("method", ""),
+    }
+    if space.get("error"):
+        res["error"] = space["error"]
+    return res
+
+
+@app.post("/api/ftp/add-game")
+def api_add_game(req: AddGameRequest) -> dict[str, Any]:
+    data_root = get_data_root()
+    cfg = settings_store.get()
+    dest = req.dest_dir if (req.dest_dir and req.dest_dir.strip()) else cfg["ftp_remote_dir"]
+    active = {
+        it["source_path"] for it in queue_db.list_items(kind="ftp") if it["status"] in ("PEND", "REAN", "PAUS", "PROC")
+    }
+    try:
+        plan = plan_game_upload(req.paths, data_root, dest, active)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    inserted = queue_db.add_items(plan["entries"])
+    if inserted:
+        names = ", ".join(g["name"] for g in plan["groups"]) or "juego"
+        queue_db.add_log("ftp", "INFO", f"Juego completo añadido a la cola FTP ({len(inserted)} archivo(s)): {names}")
+    return {
+        "added": len(inserted),
+        "items": decorate_queue_items(inserted, cfg, data_root),
+        "warnings": plan["warnings"],
+        "groups": plan["groups"],
+    }
+
+
+@app.get("/api/history")
+def api_history(
+    kind: Literal["todos", "mover", "ftp"] = "todos",
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+) -> dict[str, Any]:
+    items, total = queue_db.list_history(kind=kind, limit=limit, offset=offset)
+    return {"items": items, "total": total}
+
+
+@app.delete("/api/history")
+def api_clear_history(kind: Literal["todos", "mover", "ftp"] = "todos") -> dict[str, int]:
+    removed = queue_db.clear_history(kind)
+    if removed:
+        queue_db.add_log("sistema", "INFO", f"Historial ({kind}) vaciado: {removed} registro(s)")
+    return {"removed": removed}
 
 
 @app.get("/api/logs")

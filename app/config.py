@@ -34,7 +34,30 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "ftp_retries": 3,
     "ftp_retry_wait": 10,
     "ftp_verify_size": False,
+    # Papelera del explorador: días que se conservan los elementos borrados (0 = borrado directo)
+    "trash_days": 7,
+    "trash_enabled": True,
 }
+
+
+def parse_favorites(raw: Any) -> list[str]:
+    """Acepta favoritos como lista, como texto JSON (array) o como texto con una ruta por línea/coma."""
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        return [str(x) for x in raw]
+    text = str(raw).strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        try:
+            data = json.loads(text)
+            if isinstance(data, list):
+                return [str(x) for x in data]
+        except json.JSONDecodeError:
+            pass
+    parts = [p.strip() for chunk in text.splitlines() for p in chunk.split(",")]
+    return [p for p in parts if p]
 
 
 def get_data_root() -> str:
@@ -103,7 +126,7 @@ def sanitize_settings(raw: dict[str, Any], data_root: str | None = None) -> dict
                 merged[key] = root
 
     favs: list[str] = []
-    for item in merged.get("mover_favorites") or []:
+    for item in parse_favorites(merged.get("mover_favorites")):
         s = str(item).strip()
         if not s:
             continue
@@ -146,6 +169,15 @@ def sanitize_settings(raw: dict[str, Any], data_root: str | None = None) -> dict
     merged["ftp_limit_kbps"] = max(0, int(merged.get("ftp_limit_kbps") or 0))
     merged["ftp_retries"] = max(0, int(merged.get("ftp_retries") or 0))
     merged["ftp_retry_wait"] = max(1, int(merged.get("ftp_retry_wait") or 10))
+    try:
+        trash_days = int(merged.get("trash_days", 7))
+    except (TypeError, ValueError):
+        trash_days = 7
+    merged["trash_days"] = max(0, min(trash_days, 365))
+    raw_enabled = merged.get("trash_enabled", True)
+    if isinstance(raw_enabled, str):
+        raw_enabled = raw_enabled.strip().lower() not in ("0", "false", "no", "off", "")
+    merged["trash_enabled"] = bool(raw_enabled)
 
     return merged
 
@@ -209,3 +241,13 @@ class SettingsStore:
             self._write(cleaned)
             self._settings = cleaned
             return dict(self._settings)
+
+
+def effective_trash_days(settings: dict) -> int:
+    """Días de papelera efectivos: 0 (borrado directo) si la papelera está desactivada."""
+    if not settings.get("trash_enabled", True):
+        return 0
+    try:
+        return max(0, int(settings.get("trash_days", 7)))
+    except (TypeError, ValueError):
+        return 7

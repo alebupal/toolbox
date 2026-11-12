@@ -71,6 +71,43 @@ class QueueDB:
                 )
                 """
             )
+            # Historial de transferencias terminadas (independiente de la cola: "Limpiar OK" no lo borra)
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    item_id INTEGER,
+                    kind TEXT NOT NULL,
+                    op TEXT NOT NULL DEFAULT '',
+                    src TEXT NOT NULL DEFAULT '',
+                    dest TEXT NOT NULL DEFAULT '',
+                    size INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    started_at REAL,
+                    finished_at REAL NOT NULL,
+                    duration_s REAL,
+                    avg_bps REAL,
+                    error TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_history_kind ON history (kind, id)")
+            # Papelera: elementos borrados desde el explorador que aún se pueden restaurar
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS trash (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    original_path TEXT NOT NULL,
+                    trash_path TEXT NOT NULL DEFAULT '',
+                    name TEXT NOT NULL,
+                    is_dir INTEGER NOT NULL DEFAULT 0,
+                    size INTEGER NOT NULL DEFAULT 0,
+                    trashed_at REAL NOT NULL,
+                    expires_at REAL
+                )
+                """
+            )
             # Recuperar elementos que quedaron en PROC tras un apagado brusco
             now = time.time()
             cur.execute(
@@ -420,3 +457,117 @@ class QueueDB:
             self._conn.commit()
         return updated
 
+
+    # ------------------------------------------------------------------
+    # Historial de transferencias
+    # ------------------------------------------------------------------
+    HISTORY_MAX_ROWS = 20000
+
+    def add_history(self, entry: dict[str, Any]) -> int:
+        """Registra una transferencia terminada (OK o ERR)."""
+        finished = float(entry.get("finished_at") or time.time())
+        started = entry.get("started_at")
+        duration = entry.get("duration_s")
+        if duration is None and started:
+            duration = max(0.0, finished - float(started))
+        size = int(entry.get("size") or 0)
+        avg_bps = entry.get("avg_bps")
+        # Velocidad media solo con duraciones medibles (un `mv` en el mismo disco es instantáneo)
+        if avg_bps is None and duration and duration >= 1 and entry.get("status") == "OK":
+            avg_bps = size / duration
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO history (
+                    item_id, kind, op, src, dest, size, status, started_at,
+                    finished_at, duration_s, avg_bps, error, note
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    entry.get("item_id"),
+                    entry["kind"],
+                    entry.get("op") or "",
+                    entry.get("src") or "",
+                    entry.get("dest") or "",
+                    size,
+                    entry.get("status") or "ERR",
+                    started,
+                    finished,
+                    duration,
+                    avg_bps,
+                    entry.get("error") or "",
+                    entry.get("note") or "",
+                ),
+            )
+            new_id = int(cur.lastrowid or 0)
+            cur.execute(
+                "DELETE FROM history WHERE id NOT IN (SELECT id FROM history ORDER BY id DESC LIMIT ?)",
+                (self.HISTORY_MAX_ROWS,),
+            )
+            self._conn.commit()
+        return new_id
+
+    def list_history(self, kind: str | None = None, limit: int = 100, offset: int = 0) -> tuple[list[dict[str, Any]], int]:
+        limit = max(1, min(int(limit), 1000))
+        offset = max(0, int(offset))
+        where = ""
+        params: list[Any] = []
+        if kind and kind != "todos":
+            where = "WHERE kind = ?"
+            params.append(kind)
+        with self._lock:
+            total = int(self._conn.execute(f"SELECT COUNT(*) FROM history {where}", params).fetchone()[0])
+            rows = self._conn.execute(
+                f"""
+                SELECT id, item_id, kind, op, src, dest, size, status, started_at, finished_at,
+                       duration_s, avg_bps, error, note
+                FROM history {where} ORDER BY id DESC LIMIT ? OFFSET ?
+                """,
+                (*params, limit, offset),
+            ).fetchall()
+        return [dict(r) for r in rows], total
+
+    def clear_history(self, kind: str | None = None) -> int:
+        with self._lock:
+            if kind and kind != "todos":
+                cur = self._conn.execute("DELETE FROM history WHERE kind = ?", (kind,))
+            else:
+                cur = self._conn.execute("DELETE FROM history")
+            self._conn.commit()
+            return cur.rowcount
+
+    # ------------------------------------------------------------------
+    # Papelera
+    # ------------------------------------------------------------------
+    def add_trash_entry(self, original_path: str, name: str, is_dir: bool, size: int, expires_at: float | None) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                INSERT INTO trash (original_path, trash_path, name, is_dir, size, trashed_at, expires_at)
+                VALUES (?, '', ?, ?, ?, ?, ?)
+                """,
+                (original_path, name, 1 if is_dir else 0, int(size), time.time(), expires_at),
+            )
+            self._conn.commit()
+            return int(cur.lastrowid or 0)
+
+    def set_trash_path(self, trash_id: int, trash_path: str) -> None:
+        with self._lock:
+            self._conn.execute("UPDATE trash SET trash_path = ? WHERE id = ?", (trash_path, trash_id))
+            self._conn.commit()
+
+    def get_trash_entry(self, trash_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM trash WHERE id = ?", (trash_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_trash(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM trash ORDER BY trashed_at DESC, id DESC").fetchall()
+        return [dict(r) for r in rows]
+
+    def remove_trash_entry(self, trash_id: int) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM trash WHERE id = ?", (trash_id,))
+            self._conn.commit()
