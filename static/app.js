@@ -17,6 +17,7 @@ const state = {
   entryInfo: new Map(), // path -> {name, is_dir, size}
   dirSizes: {}, // path -> {bytes, files}
   sort: { key: "name", order: "asc" },
+  dstSort: { key: "name", order: "asc" },
   search: { active: false, q: "", loading: false, results: [], truncated: false, error: "", unsupported: false },
 
   dstLocalPath: "",
@@ -1084,8 +1085,8 @@ async function loadSrcDir(path) {
   else renderSrcTable();
 }
 
-function sortEntries(list, isDir) {
-  const { key, order } = state.sort;
+function sortEntries(list, isDir, sort = state.sort) {
+  const { key, order } = sort;
   const dir = order === "desc" ? -1 : 1;
   const byName = (a, b) => a.name.localeCompare(b.name, "es", { numeric: true, sensitivity: "base" });
   const val = (e) => {
@@ -1627,31 +1628,67 @@ const dstPathbar = setupPathbar({
   onNavigate: (p) => loadDstDir(p),
 });
 
+(function restoreDstSort() {
+  const raw = storage.get("toolbox_dst_sort", "");
+  const [key, order] = raw.split(":");
+  if (["name", "mtime", "size"].includes(key) && ["asc", "desc"].includes(order)) state.dstSort = { key, order };
+})();
+
+function updateDstSortHeaders() {
+  // En FTP solo hay nombres de carpeta: fecha y tamaño no se pueden ordenar
+  const ftp = state.exploreMode !== "mover";
+  document.querySelectorAll(".dst-table .th-sort").forEach((b) => {
+    const on = b.dataset.dsort === (ftp ? "name" : state.dstSort.key);
+    b.disabled = ftp && b.dataset.dsort !== "name";
+    b.classList.toggle("active", on);
+    b.querySelector(".sort-ind").textContent = on ? (state.dstSort.order === "asc" ? "▲" : "▼") : "";
+    b.closest("th").setAttribute("aria-sort", on ? (state.dstSort.order === "asc" ? "ascending" : "descending") : "none");
+  });
+}
+
+document.querySelectorAll(".dst-table .th-sort").forEach((b) => {
+  b.onclick = () => {
+    const key = b.dataset.dsort;
+    const cur = state.exploreMode === "mover" ? state.dstSort.key : "name";
+    const order = cur === key
+      ? (state.dstSort.order === "asc" ? "desc" : "asc")
+      : (key === "name" ? "asc" : "desc");
+    state.dstSort = { key, order };
+    storage.set("toolbox_dst_sort", `${key}:${order}`);
+    renderDstTable();
+  };
+});
+
 function renderDstTable() {
   const q = ($("dstFilter").value || "").trim().toLowerCase();
   const body = $("dstTableBody");
+  updateDstSortHeaders();
   if (state.exploreMode === "mover") {
     const data = state.dstLocalData;
     if (!data) return;
-    const dirs = (data.dirs || []).filter((d) => !q || d.name.toLowerCase().includes(q));
-    const files = (data.files || []).filter((f) => !q || f.name.toLowerCase().includes(q));
+    const dirs = sortEntries((data.dirs || []).filter((d) => !q || d.name.toLowerCase().includes(q)), true, state.dstSort);
+    const files = sortEntries((data.files || []).filter((f) => !q || f.name.toLowerCase().includes(q)), false, state.dstSort);
+    const date = (e) => `<td class="col-mtime">${escapeHtml(e.mtime ? fmtDate(e.mtime) : "")}</td>`;
     const rows = [
-      ...dirs.map((d) => `<tr><td><button type="button" class="dir-link" data-dopen="${escapeHtml(d.path)}">📁 ${escapeHtml(d.name)}</button></td><td class="muted col-size">DIR</td></tr>`),
-      ...files.map((f) => `<tr><td class="muted file-name">📄 ${escapeHtml(f.name)}</td><td class="muted col-size">${fmtBytes(f.size_bytes)}</td></tr>`),
+      ...dirs.map((d) => `<tr><td><button type="button" class="dir-link" data-dopen="${escapeHtml(d.path)}">📁 ${escapeHtml(d.name)}</button></td>${date(d)}<td class="muted col-size">DIR</td></tr>`),
+      ...files.map((f) => `<tr><td class="muted file-name">📄 ${escapeHtml(f.name)}</td>${date(f)}<td class="muted col-size">${fmtBytes(f.size_bytes)}</td></tr>`),
     ];
     body.innerHTML = rows.length
       ? rows.join("")
-      : stateRow(2, q
+      : stateRow(3, q
         ? { icon: "🔍", title: `Sin coincidencias para «${$("dstFilter").value.trim()}»` }
         : { icon: "📭", title: "Carpeta vacía", text: "Los archivos se copiarán aquí.", actions: [{ id: "dst-mkdir", label: "+ Carpeta" }] });
   } else {
     const res = state.dstRemoteData;
     if (!res || !res.ok) return;
     const base = res.path === "/" ? "" : res.path;
-    const dirs = (res.dirs || []).filter((name) => !q || name.toLowerCase().includes(q));
+    const dir = state.dstSort.order === "desc" ? -1 : 1;
+    const dirs = (res.dirs || [])
+      .filter((name) => !q || name.toLowerCase().includes(q))
+      .sort((a, b) => a.localeCompare(b, "es", { numeric: true, sensitivity: "base" }) * dir);
     body.innerHTML = dirs.length
-      ? dirs.map((name) => `<tr><td><button type="button" class="dir-link" data-dopen="${escapeHtml(`${base}/${name}`)}">📁 ${escapeHtml(name)}</button></td><td class="muted col-size">DIR</td></tr>`).join("")
-      : stateRow(2, { icon: "📭", title: q ? "Sin coincidencias" : `Sin subcarpetas en ${state.dstRemotePath}`, text: q ? "" : "Los archivos se subirán aquí." });
+      ? dirs.map((name) => `<tr><td><button type="button" class="dir-link" data-dopen="${escapeHtml(`${base}/${name}`)}">📁 ${escapeHtml(name)}</button></td><td class="col-mtime"></td><td class="muted col-size">DIR</td></tr>`).join("")
+      : stateRow(3, { icon: "📭", title: q ? "Sin coincidencias" : `Sin subcarpetas en ${state.dstRemotePath}`, text: q ? "" : "Los archivos se subirán aquí." });
   }
 }
 
@@ -1682,7 +1719,7 @@ async function loadDstDir(pathOverride) {
       renderBreadcrumbs($("dstBreadcrumbs"), data.path, data.data_root, (p) => loadDstDir(p));
       renderDstTable();
     } catch (err) {
-      $("dstTableBody").innerHTML = stateRow(2, { icon: "⚠️", title: "No se pudo abrir el destino", text: err.message, error: true, actions: [{ id: "dst-retry", label: "↻ Reintentar", primary: true }] });
+      $("dstTableBody").innerHTML = stateRow(3, { icon: "⚠️", title: "No se pudo abrir el destino", text: err.message, error: true, actions: [{ id: "dst-retry", label: "↻ Reintentar", primary: true }] });
     }
   } else {
     const target = pathOverride !== undefined ? pathOverride : (state.dstRemotePath || (state.settings && state.settings.ftp_remote_dir) || "/");
@@ -1692,12 +1729,12 @@ async function loadDstDir(pathOverride) {
     $("btnDstUp").disabled = state.dstRemotePath === "/";
     renderBookmarksBar($("dstBookmarks"), ["/", "/install", "/nsp", "/switch"].map((p) => ({ label: p, path: p })), false, (p) => loadDstDir(p));
     renderBreadcrumbs($("dstBreadcrumbs"), state.dstRemotePath, "/", (p) => loadDstDir(p));
-    $("dstTableBody").innerHTML = stateRow(2, { loading: true, text: "Conectando con el servidor FTP…" });
+    $("dstTableBody").innerHTML = stateRow(3, { loading: true, text: "Conectando con el servidor FTP…" });
     try {
       const res = await api(`/api/ftp/dirs?path=${encodeURIComponent(state.dstRemotePath)}`);
       state.dstRemoteData = res;
       if (!res.ok) {
-        $("dstTableBody").innerHTML = stateRow(2, {
+        $("dstTableBody").innerHTML = stateRow(3, {
           icon: "📡",
           title: "Sin conexión con el servidor FTP",
           text: `${res.error || "Revisa Ajustes"}. Puedes escribir la ruta remota igualmente (✎).`,
@@ -1708,7 +1745,7 @@ async function loadDstDir(pathOverride) {
       }
       renderDstTable();
     } catch (err) {
-      $("dstTableBody").innerHTML = stateRow(2, { icon: "⚠️", title: "Error", text: err.message, error: true, actions: [{ id: "dst-retry", label: "↻ Reintentar", primary: true }] });
+      $("dstTableBody").innerHTML = stateRow(3, { icon: "⚠️", title: "Error", text: err.message, error: true, actions: [{ id: "dst-retry", label: "↻ Reintentar", primary: true }] });
     }
   }
 }

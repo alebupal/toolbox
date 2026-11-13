@@ -162,7 +162,7 @@ Arriba están siempre las dos tarjetas de estado (**💾 Mover / Copiar** y **�
   - Sobre la selección: **➕ A la cola**, **⚡ Enviar e iniciar**, **🎮 Solo Switch** y **🎮 Juego completo** (modo FTP) y **🗑 Borrar…**.
 - **🎮 Juego completo** (modo FTP): encola base, actualizaciones y DLC de la carpeta o selección **en orden** (`BASE → UPD → DLC`), muestra cada juego detectado y avisa si falta el juego base de alguna actualización o DLC. Desde el mismo aviso puedes iniciar la subida.
 - **🗑 Borrar…**: un diálogo muestra qué se borra y cuánto ocupa. Por defecto **se mueve a la papelera** y el aviso inferior ofrece **Deshacer**; puedes marcar *Eliminar definitivamente* para saltártela. Se mantiene la protección frente al borrado de carpetas críticas del sistema.
-- **Panel Destino**: contenido de la carpeta local o remota (atajos `/`, `/install`, `/nsp`, `/switch`), espacio libre, `+ Carpeta` y **★ Favorito** para guardar la carpeta actual como destino favorito. Con **Destino automático (ajustes)** se usa la ruta por defecto de *Ajustes*.
+- **Panel Destino**: contenido de la carpeta local o remota (atajos `/`, `/install`, `/nsp`, `/switch`), espacio libre, columnas **ordenables por nombre, fecha de modificación y tamaño** (pulsa la cabecera; el orden se recuerda y es independiente del de Origen; en FTP solo por nombre), `+ Carpeta` y **★ Favorito** para guardar la carpeta actual como destino favorito. Con **Destino automático (ajustes)** se usa la ruta por defecto de *Ajustes*.
 
 ### 2. 📋 Colas
 - **Cola Mover** y **Cola FTP**, con filtro `Solo activos` (`PEND`, `REAN`, `PAUS`, `PROC`) y un resumen con el progreso global y el espacio libre (disco destino o **SD de la Switch**; si el servidor FTP no lo permite verás *espacio no disponible*).

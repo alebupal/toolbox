@@ -1345,3 +1345,7 @@ td.cell-state { padding: 0 !important; }
   }
   .mode-long { display: none; }
 }
+
+/* Destino FTP: solo se ordena por nombre */
+.th-sort:disabled { cursor: default; opacity: .55; }
+.th-sort:disabled:hover { color: inherit; }
