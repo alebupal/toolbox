@@ -1,4 +1,5 @@
-FROM python:3.12-slim
+# Imagen oficial de Docker Hub servida desde el espejo de AWS: no gasta el límite de descargas de Docker Hub
+FROM public.ecr.aws/docker/library/python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
