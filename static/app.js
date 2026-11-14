@@ -2491,8 +2491,6 @@ async function loadSettings() {
     $("cfgBackupRemoteRoot").value = s.ftp_backup_remote_root || "/";
     $("cfgBackupExclude").value = (s.ftp_backup_exclude || []).join("\n");
     $("cfgBackupExcludeExt").value = (s.ftp_backup_exclude_ext || []).join(", ");
-    $("cfgBackupIncremental").checked = !!s.ftp_backup_incremental;
-    $("cfgBackupCompress").checked = !!s.ftp_backup_compress;
     $("cfgBackupKeep").value = s.ftp_backup_keep ?? 0;
     loadBackupList();
     const hasTrash = Object.prototype.hasOwnProperty.call(s, "trash_days");
@@ -2544,8 +2542,6 @@ function collectSettings() {
       ftp_backup_remote_root: $("cfgBackupRemoteRoot").value.trim() || "/",
       ftp_backup_exclude: $("cfgBackupExclude").value,
       ftp_backup_exclude_ext: $("cfgBackupExcludeExt").value,
-      ftp_backup_incremental: $("cfgBackupIncremental").checked,
-      ftp_backup_compress: $("cfgBackupCompress").checked,
       ftp_backup_keep: Number($("cfgBackupKeep").value || 0),
     });
   }
@@ -2679,7 +2675,7 @@ function renderBackup(b) {
   $("backupStatusExtra").textContent = extra;
   const lines = [];
   if (running && p.current) lines.push(p.current);
-  if (p.target && !sim) lines.push(`→ ${p.target}`);
+  if (p.target && !sim) lines.push(`→ ${p.target}${p.archive_bytes ? ` (${fmtBytes(p.archive_bytes)} comprimido)` : ""}`);
   if (!running && !sim) {
     const exc = p.excluded_dirs || [];
     if (exc.length) lines.push(`Excluidas: ${exc.slice(0, 6).join(", ")}${exc.length > 6 ? "…" : ""}`);

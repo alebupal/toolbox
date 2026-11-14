@@ -494,7 +494,7 @@
               <button type="button" class="btn btn-sm btn-danger hidden" id="btnBackupStop">⏹ Detener</button>
             </div>
           </div>
-          <p class="muted">Descarga por FTP los ficheros básicos de la microSD de la Switch (configuración de Atmosphère, homebrew, partidas guardadas…) a una carpeta del servidor, <strong>sin juegos ni carpetas pesadas</strong>. Usa la conexión de arriba y no puede ir a la vez que la cola FTP.</p>
+          <p class="muted">Descarga por FTP los ficheros básicos de la microSD de la Switch (configuración de Atmosphère, homebrew, partidas guardadas…) a una carpeta del servidor, <strong>sin juegos ni carpetas pesadas</strong>, en un <code>.tar.gz</code> por backup. Usa la conexión de arriba y no puede ir a la vez que la cola FTP.</p>
 
           <div class="backup-status hidden" id="backupStatus" aria-live="polite">
             <div class="qs-row"><strong id="backupStatusText">—</strong> <span class="muted" id="backupStatusExtra"></span></div>
@@ -527,21 +527,13 @@
             <button type="button" class="btn btn-sm btn-ghost" id="btnBackupExcludeDefaults">↺ Restaurar exclusiones por defecto</button>
             <span class="muted">Por defecto solo se guardan los ficheros básicos: sin juegos, capturas/vídeos, emuMMC, copias de la NAND ni ROMs.</span>
           </div>
-          <label class="chk-block chk-desc"><input type="checkbox" name="ftp_backup_incremental" id="cfgBackupIncremental">
-            <span><strong>Backup incremental</strong>
-              <span class="hint">Actualiza siempre la carpeta <code>switch-sd</code> y copia solo lo nuevo o cambiado. Desactivado: cada backup crea una carpeta nueva con la fecha (<code>switch-sd-AAAAMMDD-HHMMSS</code>).</span></span>
-          </label>
-          <label class="chk-block chk-desc"><input type="checkbox" name="ftp_backup_compress" id="cfgBackupCompress">
-            <span><strong>Comprimir en .tar.gz</strong>
-              <span class="hint">Solo en los backups con fecha: al terminar se empaqueta la carpeta y se borra. Para restaurarlo se descomprime solo.</span></span>
-          </label>
           <div class="form-grid">
             <label>Conservar los últimos
               <span class="input-unit">
                 <input type="number" min="0" max="999" name="ftp_backup_keep" id="cfgBackupKeep" aria-describedby="hintBackupKeep">
                 <span class="unit">backups</span>
               </span>
-              <span class="hint" id="hintBackupKeep">0 = todos. Al terminar un backup correcto se borran los backups con fecha más antiguos (no toca <code>switch-sd</code>).</span>
+              <span class="hint" id="hintBackupKeep">Cada backup se guarda como <code>switch-sd-AAAAMMDD-HHMMSS.tar.gz</code>. 0 = todos; si no, al terminar uno correcto se borran los más antiguos.</span>
             </label>
           </div>
 

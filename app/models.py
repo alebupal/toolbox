@@ -48,7 +48,6 @@ class AddQueueRequest(BaseModel):
 
 class BackupStartRequest(BaseModel):
     dest_dir: str | None = None  # None = carpeta de backups de Configuración
-    incremental: bool | None = None  # None = ajuste de Configuración
     extra_exclude: list[str] | None = None  # Exclusiones adicionales solo para esta ejecución
     simulate: bool = False  # Solo recorre la SD y calcula qué se copiaría
 
@@ -95,8 +94,6 @@ class SettingsUpdateRequest(BaseModel):
     ftp_verify_size: bool | None = None
     ftp_backup_dir: str | None = None
     ftp_backup_remote_root: str | None = None
-    ftp_backup_incremental: bool | None = None
-    ftp_backup_compress: bool | None = None
     ftp_backup_keep: int | None = None
     ftp_backup_exclude: list[str] | str | None = None
     ftp_backup_exclude_ext: list[str] | str | None = None

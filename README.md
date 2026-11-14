@@ -183,7 +183,7 @@ Arriba están siempre las dos tarjetas de estado (**💾 Mover / Copiar** y **�
 - **Los cambios se guardan solos** (indicador *Guardando… / ✓ Guardado*).
 - **Mover / Copiar**: origen inicial, destino por defecto, operación, conflictos (`omitir`, `sobrescribir`, `renombrar`), verificación (`tamano`, `checksum`, `no`), **límite en MB/s** (`0` = sin límite), reintentos y espera, y **carpetas favoritas** como lista (añadir con el selector o con *★ Favorito* del explorador, quitar con `✕`).
 - **FTP / Switch**, agrupado en **Conexión** (IP, puerto, usuario, contraseña, pasivo, FTPS/TLS) y **Comportamiento** (carpeta local inicial, carpeta remota, límite en MB/s, reintentos, estructura de carpetas, verificar tamaño final). Incluye **🔍 Buscar Switch** y **🔌 Probar conexión**.
-- **💾 Backup de la microSD**: copia por FTP los **ficheros básicos de la SD de la Switch** (configuración, homebrew, partidas guardadas) a una carpeta del servidor, **sin juegos ni carpetas pesadas** (ver [detalles](#backup-de-la-microsd)). Ajustes: carpeta de backups, carpeta remota a copiar (`/` = toda la SD), carpetas excluidas (una por línea), extensiones excluidas, *Incremental*, *Comprimir en .tar.gz* y *Conservar los últimos N backups*. **🔍 Simular** recorre la SD sin descargar nada y muestra dos tablas: lo que se copiaría por carpeta de primer nivel y lo que se excluye con lo que ocupa (para ajustar las exclusiones antes del primer backup). **▶ Hacer backup** lo lanza en segundo plano con barra de progreso (fase *Analizando la SD* y después *Copiando*), **⏹ Detener** lo para y al terminar se muestra el resumen (ficheros, tamaño, carpetas excluidas, errores) y queda en el **Historial** como `BACKUP SD`. No se puede lanzar mientras la cola FTP sube (ni al revés). Debajo, **Backups guardados** lista las carpetas y `.tar.gz` con fecha, tamaño y tipo; **↩ Restaurar** los sube a la SD (ver [restaurar](#restaurar-un-backup-en-la-sd)).
+- **💾 Backup de la microSD**: copia por FTP los **ficheros básicos de la SD de la Switch** (configuración, homebrew, partidas guardadas) a una carpeta del servidor, **sin juegos ni carpetas pesadas** y **siempre comprimidos** en `switch-sd-AAAAMMDD-HHMMSS.tar.gz` (ver [detalles](#backup-de-la-microsd)). Ajustes: carpeta de backups, carpeta remota a copiar (`/` = toda la SD), carpetas excluidas (una por línea), extensiones excluidas y *Conservar los últimos N backups*. **🔍 Simular** recorre la SD sin descargar nada y muestra dos tablas: lo que se copiaría por carpeta de primer nivel y lo que se excluye con lo que ocupa (para ajustar las exclusiones antes del primer backup). **▶ Hacer backup** lo lanza en segundo plano con barra de progreso (fases *Analizando la SD*, *Copiando* y *Comprimiendo*), **⏹ Detener** lo para y al terminar se muestra el resumen (ficheros, tamaño, carpetas excluidas, errores) y queda en el **Historial** como `BACKUP SD`. No se puede lanzar mientras la cola FTP sube (ni al revés). Debajo, **Backups guardados** lista los `.tar.gz` (y las carpetas de versiones anteriores) con fecha, tamaño y tipo; **↩ Restaurar** los sube a la SD (ver [restaurar](#restaurar-un-backup-en-la-sd)).
 - **Papelera y apariencia**: usar papelera (sí/no), días en la papelera y tema.
 
 ### 6. 📜 Registro y 📖 Guía
@@ -557,7 +557,7 @@ Sube ficheros por FTP/FTPS con `curl` (reanudación `-C -`, límite de velocidad
 subeftp                                     # menú TUI
 subeftp [-j] [-d DESTINO] [-s] RUTA...      # añadir a la cola FTP
 subeftp --juego RUTA... [-d DESTINO] [-s]   # juego completo en orden
-subeftp --backup [-d CARPETA] [-n] [-f]     # backup de la microSD sin juegos
+subeftp --backup [-d CARPETA] [-f]          # backup de la microSD sin juegos (.tar.gz)
 subeftp --OPCIÓN [ARGUMENTOS]               # consultas y acciones (una por llamada)
 ```
 
@@ -616,23 +616,21 @@ El servidor FTP no informa del espacio libre. Pendiente de subir: 17.4 GB
 - El último valor conocido aparece en `--estado` (`Espacio libre en la SD: …`, con `⚠ NO CABE lo pendiente` si procede) y en la web.
 - Código: `0`; `1` si no se pudo conectar (`(No se pudo consultar el espacio: …)`) o no hay servidor configurado.
 
-#### `subeftp --backup [-d CARPETA] [-n | --completo] [-x PATRÓN]... [-f] [--simular]` *(no disponible en --legacy)*
+#### `subeftp --backup [-d CARPETA] [-x PATRÓN]... [-f] [--simular]` *(no disponible en --legacy)*
 
 Descarga la microSD de la Switch a `CARPETA` (por defecto, *Carpeta de backups* de Configuración) **excluyendo los juegos y las carpetas pesadas** (capturas, emuMMC, copias de la NAND, ROMs) y los ficheros `.nsp`/`.nsz`/`.xci`/`.xcz`/`.nca`; ver [exclusiones](#backup-de-la-microsd). En la Switch, abre **DBI → servidor FTP en modo «explorar SD»** (o `ftpd` / `sys-ftpd`): así la raíz del FTP es la SD. No uses el modo de instalar juegos de DBI.
 
 | Opción | Efecto |
 |---|---|
 | `-d RUTA`, `--destino RUTA`, `--destino=RUTA` | Carpeta local donde guardar el backup. |
-| `-n`, `--incremental` | Actualiza siempre `CARPETA/switch-sd/`: solo descarga lo nuevo o con otro tamaño y reanuda los `.part` a medias. |
-| `--completo` | Crea una carpeta nueva `CARPETA/switch-sd-AAAAMMDD-HHMMSS/` (por defecto, salvo que *Incremental* esté activo en Configuración). |
 | `-x PATRÓN`, `--excluir PATRÓN` | Excluye además esa carpeta solo en esta ejecución (repetible, ej. `-x /emuMMC`). |
 | `-f`, `--seguir`, `--esperar` | Espera a que termine mostrando el progreso (útil en `cron`, el código de salida refleja el resultado). Con terminal se sigue siempre; `Ctrl+C` deja de mirar y el backup **continúa** en la web. |
 | `--simular`, `--dry-run` | No descarga nada: recorre la SD (también las carpetas excluidas, para medirlas) y muestra qué se copiaría por carpeta de primer nivel y cuánto ocupa lo excluido. |
 
-Ajustes que se aplican al terminar un backup **correcto con fecha** (no al incremental):
+Cada backup se guarda **siempre comprimido** en `CARPETA/switch-sd-AAAAMMDD-HHMMSS.tar.gz`: se descarga en una carpeta de trabajo oculta (`.switch-sd-AAAAMMDD-HHMMSS.tmp`), se empaqueta (fase *Comprimiendo*) y se borra la carpeta. Si se detiene o falla antes de comprimir, la carpeta de trabajo se elimina (y las que deje un corte brusco se borran al empezar el siguiente). Si algún fichero falla, el resto se comprime igualmente y el backup termina en `ERR`. Por eso se pide espacio libre para el doble de lo que se va a copiar.
 
-- **Comprimir en .tar.gz** (`ftp_backup_compress`): empaqueta la carpeta en `switch-sd-AAAAMMDD-HHMMSS.tar.gz` y la borra (fase *Comprimiendo*).
-- **Conservar los últimos N** (`ftp_backup_keep`, `0` = todos): borra los backups con fecha (carpetas o `.tar.gz`) más antiguos. Nunca toca `switch-sd/` ni nada que no se llame `switch-sd-AAAAMMDD-HHMMSS`.
+- **Conservar los últimos N** (`ftp_backup_keep`, `0` = todos): al terminar un backup correcto borra los backups con fecha más antiguos (`.tar.gz` o carpetas de versiones anteriores). Nunca toca nada que no se llame `switch-sd-AAAAMMDD-HHMMSS`.
+- Las opciones `-n`/`--incremental` y `--completo` de versiones anteriores ya no existen: se ignoran con un aviso.
 
 ```text
 $ subeftp --backup --simular
@@ -652,14 +650,14 @@ Simulación: se copiarían 1843 fichero(s), 412.6 MB
 - Salida: `✓ Backup completado: N/N fichero(s), X GB`, la carpeta, las carpetas de juegos excluidas y los errores. Código: `0` si todo fue bien; `1` con errores, detenido, sin carpeta de backups, cola FTP subiendo (`HTTP 409`) o FTP inaccesible.
 
 ```bash
-docker exec -it toolbox subeftp --backup -d /host/mnt/backups/switch          # carpeta nueva con fecha
-docker exec toolbox subeftp --backup -n -f -d /host/mnt/backups/switch        # cron: incremental y esperar
+docker exec -it toolbox subeftp --backup -d /host/mnt/backups/switch          # switch-sd-AAAAMMDD-HHMMSS.tar.gz
+docker exec toolbox subeftp --backup -f -d /host/mnt/backups/switch           # cron: esperar a que termine
 ```
 
 #### Restaurar un backup en la SD: `subeftp --backup-listar [CARPETA]` y `subeftp --backup-restaurar RUTA [-s]` *(no disponible en --legacy)*
 
-- `--backup-listar` muestra los backups de la carpeta de backups (o de `CARPETA`): fecha, tamaño, nº de ficheros y tipo (`carpeta`, `incremental` o `tar.gz`).
-- `--backup-restaurar RUTA` encola en la **cola FTP** la subida de `RUTA` a la SD, cada fichero a su ruta original (`<carpeta remota del backup>/<ruta dentro del backup>`). `RUTA` puede ser un backup entero (carpeta `switch-sd…` o `.tar.gz`, que se descomprime antes junto al original) o una carpeta o fichero de dentro (p. ej. `…/switch-sd-20261114-113247/JKSV` para devolver solo las partidas). Con `-s` arranca la subida; si no, pregunta (con terminal).
+- `--backup-listar` muestra los backups de la carpeta de backups (o de `CARPETA`): fecha, tamaño, nº de ficheros y tipo (`tar.gz`, o `carpeta`/`incremental` en los de versiones anteriores).
+- `--backup-restaurar RUTA` encola en la **cola FTP** la subida de `RUTA` a la SD, cada fichero a su ruta original (`<carpeta remota del backup>/<ruta dentro del backup>`). `RUTA` puede ser un backup entero (carpeta `switch-sd…` o `.tar.gz`, que se descomprime antes junto al original) o una carpeta o fichero de dentro (p. ej., tras restaurar un `.tar.gz` una vez, `…/switch-sd-20261114-113247/JKSV` para devolver solo las partidas). Con `-s` arranca la subida; si no, pregunta (con terminal).
 - Los ficheros que ya estén en la SD con el mismo tamaño se omiten; el resto se sobrescribe. Abre DBI en modo «explorar SD» y no dejes un juego abierto mientras se sube.
 - En la web: *Ajustes → Backup de la microSD → Backups guardados → ↩ Restaurar* (encola y arranca la subida). En el menú TUI: `b` → `3`.
 - Código: `0` si se encoló algo; `1` si la ruta no es un backup, no había nada nuevo que subir o hay un backup en marcha (`HTTP 409`).
@@ -787,7 +785,7 @@ La web y los comandos SSH usan la misma API en `http://127.0.0.1:$PORT` (sin aut
 | `POST /api/queue/change-dest` | `{item_ids[], dest_dir}` | `{updated}` |
 | `GET /api/history` · `DELETE /api/history` | `kind=todos\|mover\|ftp`, `limit` (100), `offset` | `{items[] (id, kind, op, src, dest, size, status, started_at, finished_at, duration_s, avg_bps, error), total}` · `{removed}` |
 | `GET /api/ftp/backup` | — | `{running, stopping, progress, last}`. `progress`/`last`: `phase` (`scanning`·`downloading`·`done`), `target`, `files_total`, `files_done`, `files_skipped`, `files_failed`, `bytes_total`, `bytes_done`, `current`, `excluded_dirs[]`, `excluded_files`, `errors[]`, `status` (`OK`·`ERR`·`STOP`) y `error`. También va en `GET /api/status` como `backup`. |
-| `POST /api/ftp/backup/start` · `/stop` | `{dest_dir?, incremental?, extra_exclude?[], simulate?}` · — | Estado del backup. `400` sin carpeta de backups; `409` si la cola FTP está subiendo (y `POST /api/queue/ftp/start` da `409` durante un backup). Una simulación termina con `status: "SIM"` y añade `top_dirs[]` y `excluded_detail[]` (`path`, `files`, `bytes`). |
+| `POST /api/ftp/backup/start` · `/stop` | `{dest_dir?, extra_exclude?[], simulate?}` · — | Estado del backup. `400` sin carpeta de backups; `409` si la cola FTP está subiendo (y `POST /api/queue/ftp/start` da `409` durante un backup). Al terminar, `target` es el `.tar.gz` y `archive_bytes` su tamaño. Una simulación termina con `status: "SIM"` y añade `top_dirs[]` y `excluded_detail[]` (`path`, `files`, `bytes`). |
 | `GET /api/ftp/backup/list` | `path` (carpeta de backups de Configuración) | `{path, items[] (name, path, kind dir\|tar, size, files, mtime, incremental)}` |
 | `POST /api/ftp/backup/restore` | `{path, start:false}` | Encola la subida a la SD: `{root, added, skipped, bytes, started}`. `400` si no es un backup; `409` durante un backup. |
 | `POST /api/ftp/add-game` | `{paths[], dest_dir?}` | `{added, items[], warnings[], groups[] (title_id, name, base, upd, dlc)}` |
@@ -824,7 +822,7 @@ La web y los comandos SSH usan la misma API en `http://127.0.0.1:$PORT` (sin aut
   - Desactiva **Verificar tamaño final** cuando uses **DBI**, ya que DBI instala los paquetes al vuelo sin guardar el archivo en el destino.
   - **Espacio en la SD:** antes de cada subida se consulta el espacio libre (`AVBL`, `SITE FREE`, `SITE DF`). Si el fichero no cabe, el elemento termina en `ERR` sin intentar la subida; si el servidor no lo soporta, no se vuelve a preguntar en esa ejecución.
   - **Juego completo:** `--juego` / `jc` / *Subir juego completo* agrupan por *title id* (`base = tid & ~0x1FFF`; `…800` = update, bit `0x1000` = DLC) y encolan Base → Update → DLC en una carpeta remota plana.
-  - <a id="backup-de-la-microsd"></a>**Backup de la microSD:** en la Switch, inicia el FTP de **DBI en modo «explorar SD»** (no el de instalar juegos; también valen `ftpd` / `sys-ftpd`), de modo que `/` es la raíz de la SD. Recorre el árbol con `MLSD` (o `LIST` si el servidor no lo soporta) usando una sola conexión, salta las carpetas excluidas y descarga el resto con `RETR` a `fichero.part`, que se renombra al terminar (se conserva la fecha si el servidor la da). Antes de copiar comprueba que cabe en el disco local. Si el servidor no admite `REST`, el fichero se reintenta desde cero. Usa los reintentos y la espera de *FTP*, pero **no** el límite de velocidad (es de subida).
+  - <a id="backup-de-la-microsd"></a>**Backup de la microSD:** en la Switch, inicia el FTP de **DBI en modo «explorar SD»** (no el de instalar juegos; también valen `ftpd` / `sys-ftpd`), de modo que `/` es la raíz de la SD. Recorre el árbol con `MLSD` (o `LIST` si el servidor no lo soporta o, como el FTP de DBI, responde a `MLSD` con un listado vacío) usando una sola conexión, salta las carpetas excluidas y descarga el resto con `RETR` a `fichero.part`, que se renombra al terminar, y al final lo empaqueta todo en el `.tar.gz` (se conserva la fecha si el servidor la da). Antes de copiar comprueba que cabe en el disco local. Si el servidor no admite `REST`, el fichero se reintenta desde cero. Usa los reintentos y la espera de *FTP*, pero **no** el límite de velocidad (es de subida).
     - **Exclusiones por defecto** (solo se guardan los ficheros básicos: configuración, homebrew y partidas guardadas). Todas se pueden cambiar en *Ajustes* (o con `8` en el menú de `subeftp`; escribe `defecto` para volver a ellas) y la web tiene **↺ Restaurar exclusiones por defecto**:
 
       | Patrón | Qué es |
@@ -838,7 +836,7 @@ La web y los comandos SSH usan la misma API en `http://127.0.0.1:$PORT` (sin aut
       | `.nsp`, `.nsz`, `.xci`, `.xcz`, `.nca` | Ficheros de juego estén donde estén. |
 
       Los patrones admiten `*` y `?` y no distinguen mayúsculas. Se conserva lo demás: `atmosphere`, `bootloader`, `switch`, `config`, `Nintendo/save`, guardados de JKSV/Checkpoint… Para incluir algo excluido (p. ej. las capturas), quita su línea.
-    - Ajustes en `settings.json`: `ftp_backup_dir`, `ftp_backup_remote_root`, `ftp_backup_incremental`, `ftp_backup_compress`, `ftp_backup_keep`, `ftp_backup_exclude`, `ftp_backup_exclude_ext`.
+    - Ajustes en `settings.json`: `ftp_backup_dir`, `ftp_backup_remote_root`, `ftp_backup_keep`, `ftp_backup_exclude`, `ftp_backup_exclude_ext`.
   - El **buscador de Switch en red** escanea en lotes concurrentes de 50 sockets con timeout de `1,8 s` sobre interfaces físicas reales, probando por defecto los puertos `5000`, `2121` y `21` y leyendo el banner FTP `220`.
 
 ---

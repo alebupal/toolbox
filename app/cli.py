@@ -300,11 +300,9 @@ class ToolboxClient:
         return self._http("GET", "/api/ftp/backup")
 
     def backup_start(
-        self, dest_dir: str = "", incremental: bool | None = None, extra_exclude: list[str] | None = None, simulate: bool = False
+        self, dest_dir: str = "", extra_exclude: list[str] | None = None, simulate: bool = False
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "dest_dir": dest_dir or None, "incremental": incremental, "extra_exclude": extra_exclude or None, "simulate": simulate
-        }
+        payload: dict[str, Any] = {"dest_dir": dest_dir or None, "extra_exclude": extra_exclude or None, "simulate": simulate}
         return self._http("POST", "/api/ftp/backup/start", payload, timeout=20.0)
 
     def backup_stop(self) -> dict[str, Any]:
@@ -346,8 +344,7 @@ class ToolboxClient:
         }
 
     def backup_foreground(
-        self, dest_dir: str = "", incremental: bool | None = None, extra_exclude: list[str] | None = None,
-        simulate: bool = False,
+        self, dest_dir: str = "", extra_exclude: list[str] | None = None, simulate: bool = False,
     ) -> dict[str, Any]:
         """Backup en primer plano (sin web): Ctrl+C lo detiene. Guarda log e historial en SQLite."""
         import threading
@@ -361,7 +358,6 @@ class ToolboxClient:
                 self._local_settings().get(),
                 get_data_root(),
                 dest_dir=dest_dir or None,
-                incremental=incremental,
                 extra_exclude=extra_exclude,
                 stop_event=stop,
                 log_cb=db.add_log,
@@ -936,7 +932,7 @@ def _print_backup_result(p: dict[str, Any]) -> int:
         return _print_simulation(p)
     label = {"OK": "✓ Backup completado", "ERR": "⚠ Backup con errores", "STOP": "⏹ Backup detenido"}.get(st, st)
     print(f"{label}: {p.get('files_done', 0)}/{p.get('files_total', 0)} fichero(s), {_fmt_bytes(p.get('bytes_done', 0))}")
-    print(f"  Carpeta: {p.get('target', '')}")
+    print(f"  Fichero: {p.get('target', '')}" + (f" ({_fmt_bytes(p['archive_bytes'])} comprimido)" if p.get("archive_bytes") else ""))
     if p.get("files_skipped"):
         print(f"  Sin cambios (ya estaban): {p['files_skipped']} fichero(s)")
     exc_dirs = p.get("excluded_dirs") or []
@@ -1046,7 +1042,6 @@ def _follow_backup(client: ToolboxClient) -> int:
 
 def _run_backup_cli(client: ToolboxClient, args: list[str]) -> int:
     dest = ""
-    incremental: bool | None = None
     follow = False
     simulate = False
     extra: list[str] = []
@@ -1065,10 +1060,8 @@ def _run_backup_cli(client: ToolboxClient, args: list[str]) -> int:
             dest = a.split("=", 1)[1]
         elif a.startswith("--excluir="):
             extra.append(a.split("=", 1)[1])
-        elif a in ("-n", "--incremental"):
-            incremental = True
-        elif a == "--completo":
-            incremental = False
+        elif a in ("-n", "--incremental", "--completo"):
+            print(f"Aviso: {a} ya no existe (cada backup es un .tar.gz nuevo); se ignora.", file=sys.stderr)
         elif a in ("-f", "--seguir", "--esperar"):
             follow = True
         elif a in ("--simular", "--dry-run"):
@@ -1080,7 +1073,7 @@ def _run_backup_cli(client: ToolboxClient, args: list[str]) -> int:
     if dest:
         dest = str(Path(dest).expanduser().resolve())
     if client.is_web_running():
-        st = client.backup_start(dest, incremental, extra, simulate)
+        st = client.backup_start(dest, extra, simulate)
         target = (st.get("progress") or {}).get("target", "")
         if simulate:
             print("Simulación del backup iniciada (no se descarga nada)…")
@@ -1091,7 +1084,7 @@ def _run_backup_cli(client: ToolboxClient, args: list[str]) -> int:
         print("Consulta el progreso con: subeftp --backup-estado")
         return 0
     print("(La web no responde: el backup se hace en primer plano; Ctrl+C lo detiene.)")
-    return _print_backup_result(client.backup_foreground(dest, incremental, extra, simulate))
+    return _print_backup_result(client.backup_foreground(dest, extra, simulate))
 
 
 def _run_restore_cli(client: ToolboxClient, args: list[str]) -> int:
@@ -1187,9 +1180,9 @@ Uso:
   subeftp --juego RUTA... [-d DEST] [-s]
                                       Encola juego(s) completo(s): Base -> Update -> DLC
   subeftp --espacio                   Consulta el espacio libre en la SD (si el servidor lo soporta)
-  subeftp --backup [-d CARPETA] [-n|--completo] [-x PATRON]... [-f] [--simular]
-                                      Copia la microSD al servidor SIN juegos ni carpetas pesadas
-                                      (-n incremental en CARPETA/switch-sd, -f espera a que termine,
+  subeftp --backup [-d CARPETA] [-x PATRON]... [-f] [--simular]
+                                      Copia la microSD al servidor SIN juegos ni carpetas pesadas en
+                                      CARPETA/switch-sd-AAAAMMDD-HHMMSS.tar.gz (-f espera a que termine,
                                       --simular solo calcula qué se copiaría y cuánto ocupa)
   subeftp --backup-estado | --backup-parar
                                       Progreso / detención del backup de la microSD
@@ -1495,8 +1488,7 @@ def _edit_settings_cli(client: ToolboxClient, kind: str) -> None:
             ("ftp_backup_dir", "Carpeta local de backups de la SD"),
             ("ftp_backup_exclude", "Carpetas excluidas del backup (comas; 'defecto' = restaurar)"),
             ("ftp_backup_exclude_ext", "Extensiones excluidas del backup (comas; 'defecto' = restaurar)"),
-            ("ftp_backup_keep", "Conservar los últimos N backups con fecha (0 = todos)"),
-            ("ftp_backup_compress", "Comprimir backups con fecha en .tar.gz (s/n)"),
+            ("ftp_backup_keep", "Conservar los últimos N backups (0 = todos)"),
         ]
     )
     for key, label in fields:
@@ -1506,8 +1498,6 @@ def _edit_settings_cli(client: ToolboxClient, kind: str) -> None:
         val = input(f"  {label} [{cur}]: ").strip()
         if val.lower() == "defecto" and key.startswith("ftp_backup_exclude"):
             patch[key] = cfg.get(f"{key}_default") or []
-        elif val != "" and key == "ftp_backup_compress":
-            patch[key] = val.lower() in ("s", "si", "sí", "y", "yes", "1", "true")
         elif val != "":
             patch[key] = int(val) if key.endswith(("kbps", "port")) and val.isdigit() else val
     if kind == "ftp":
@@ -1615,7 +1605,7 @@ def _interactive_backup(client: ToolboxClient) -> None:
     print(f"  Excluye carpetas: {', '.join(cfg.get('ftp_backup_exclude') or []) or '(ninguna)'}")
     print(f"  Excluye ficheros: {', '.join('.' + e for e in cfg.get('ftp_backup_exclude_ext') or []) or '(ninguno)'}")
     keep = int(cfg.get("ftp_backup_keep") or 0)
-    print(f"  Conservar: {'todos' if not keep else f'los últimos {keep}'} · Comprimir: {'sí' if cfg.get('ftp_backup_compress') else 'no'}")
+    print(f"  Se guarda en .tar.gz · Conservar: {'todos' if not keep else f'los últimos {keep}'}")
     print("  1) Hacer backup   2) Simular (qué se copiaría)   3) Backups guardados / restaurar   0) Volver")
     op = input("  Opción: ").strip().lower()
     if op == "3":
@@ -1647,18 +1637,12 @@ def _interactive_backup(client: ToolboxClient) -> None:
         return
     if val and _ask_yes_no("  ¿Guardar esa carpeta como carpeta de backups por defecto?", True):
         client.update_settings({"ftp_backup_dir": dest})
-    incremental = None
-    if not simulate:
-        incremental = _ask_yes_no(
-            "  ¿Incremental? (S = actualizar switch-sd/ y copiar solo lo cambiado · N = carpeta nueva con fecha)",
-            bool(cfg.get("ftp_backup_incremental")),
-        )
     if client.is_web_running():
-        client.backup_start(dest, incremental, simulate=simulate)
+        client.backup_start(dest, simulate=simulate)
         print("  En marcha en segundo plano (visible en la web). Ctrl+C deja de mirar.")
         _follow_backup(client)
     else:
-        _print_backup_result(client.backup_foreground(dest, incremental, simulate=simulate))
+        _print_backup_result(client.backup_foreground(dest, simulate=simulate))
 
 
 def _interactive_trash(client: ToolboxClient) -> None:

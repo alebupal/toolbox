@@ -128,9 +128,14 @@ class BackupFtpTests(unittest.TestCase):
         return BackupRun(self.settings, self.data_root, **kw).run()
 
     def _check_target(self, target: str) -> None:
-        got = sorted(
-            os.path.relpath(os.path.join(d, f), target).replace(os.sep, "/") for d, _, fs in os.walk(target) for f in fs
-        )
+        import tarfile
+
+        # Siempre .tar.gz, sin carpeta de trabajo a la vista
+        self.assertTrue(target.endswith(".tar.gz"), target)
+        base = os.path.dirname(target)
+        self.assertEqual([n for n in os.listdir(base) if n.startswith(".")], [])
+        with tarfile.open(target, "r:gz") as tar:
+            got = sorted(m.name for m in tar.getmembers() if m.isfile())
         self.assertEqual(
             got,
             ["JKSV/Zelda/save.bin", "atmosphere/config/system_settings.ini", "switch/hbmenu.nro"],
@@ -158,7 +163,7 @@ class BackupFtpTests(unittest.TestCase):
         self.assertEqual(items[0]["op"], "backup")
         db.close()
 
-    def test_incremental_and_list_fallback(self) -> None:
+    def test_list_fallback_without_mlsd(self) -> None:
         # Servidor sin MLSD (como algunos de la Switch): se usa LIST
         orig = ftplib.FTP.mlsd
 
@@ -166,14 +171,25 @@ class BackupFtpTests(unittest.TestCase):
             raise ftplib.error_perm("500 Unknown command")
 
         with mock.patch.object(ftplib.FTP, "mlsd", no_mlsd):
-            res = self._run(incremental=True)
+            res = self._run()
         self.assertEqual(res["status"], "OK", res.get("error"))
-        self.assertTrue(res["target"].endswith("switch-sd"))
         self._check_target(res["target"])
         self.assertIs(ftplib.FTP.mlsd, orig)
 
-        res2 = self._run(incremental=True)
-        self.assertEqual(res2["files_skipped"], 3)
+    def test_stale_workdirs_are_removed(self) -> None:
+        base = os.path.join(self.data_root, "bk")
+        os.makedirs(os.path.join(base, ".switch-sd-20200101-000000.tmp", "x"))  # resto de un corte
+        res = self._run()
+        self.assertEqual(res["status"], "OK", res.get("error"))
+        self._check_target(res["target"])  # también comprueba que no queda ninguna carpeta oculta
+
+    def test_empty_mlsd_falls_back_to_list(self) -> None:
+        # El FTP de DBI anuncia MLST y responde 226 a MLSD, pero sin enviar ninguna entrada
+        with mock.patch.object(ftplib.FTP, "mlsd", lambda self, *a, **k: iter(())):
+            res = self._run()
+        self.assertEqual(res["status"], "OK", res.get("error"))
+        self.assertEqual(res["files_total"], 3)
+        self._check_target(res["target"])
 
     def test_simulation_measures_without_downloading(self) -> None:
         res = self._run(simulate=True)
@@ -199,11 +215,11 @@ class BackupFtpTests(unittest.TestCase):
                 open(full, "wb").close()
             else:
                 os.makedirs(full)
-        self.settings = dict(self.settings, ftp_backup_compress=True, ftp_backup_keep=2)
+        self.settings = dict(self.settings, ftp_backup_keep=2)
         res = self._run()
         self.assertEqual(res["status"], "OK", res.get("error"))
         self.assertTrue(res["target"].endswith(".tar.gz"))
-        self.assertFalse(os.path.isdir(res["target"][: -len(".tar.gz")]))
+        self.assertGreater(res["archive_bytes"], 0)
         self.assertEqual(res["pruned"], ["switch-sd-20200101-000000"])
         names = sorted(os.listdir(base))
         self.assertIn("otra-cosa", names)  # lo que no es un backup no se toca

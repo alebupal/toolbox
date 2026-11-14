@@ -673,7 +673,6 @@ def api_backup_start(req: BackupStartRequest | None = None) -> dict[str, Any]:
     try:
         return backup_job.start(
             dest_dir=req.dest_dir if (req.dest_dir and req.dest_dir.strip()) else None,
-            incremental=req.incremental,
             extra_exclude=req.extra_exclude,
             simulate=req.simulate,
         )
