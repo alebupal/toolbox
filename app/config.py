@@ -8,6 +8,25 @@ import threading
 from pathlib import Path
 from typing import Any
 
+# Backup de la microSD: solo los ficheros básicos (configuración, homebrew, partidas guardadas).
+# Sin '/' inicial: coincide en cualquier nivel; con '/': solo en la raíz de la SD. Comodines * y ?.
+DEFAULT_BACKUP_EXCLUDE: list[str] = [
+    "Nintendo/Contents",  # juegos, updates y DLC instalados (también los del emuMMC)
+    "Nintendo/Album",  # capturas y vídeos
+    "/emuMMC",  # emuNAND en ficheros (decenas de GB)
+    "/backup",  # copias de la NAND de Hekate (~30 GB)
+    "/install",
+    "/nsp",
+    "/xci",
+    "/games",
+    "/juegos",
+    "/roms",  # ROMs de emuladores
+]
+DEFAULT_BACKUP_EXCLUDE_EXT: list[str] = ["nsp", "nsz", "xci", "xcz", "nca"]
+# Exclusiones por defecto de la primera versión: si settings.json las tiene tal cual, se actualizan
+_OLD_BACKUP_EXCLUDE = ["Nintendo/Contents", "/install", "/nsp", "/xci", "/games", "/juegos"]
+_OLD_BACKUP_EXCLUDE_EXT = ["nsp", "nsz", "xci", "xcz"]
+
 DEFAULT_SETTINGS: dict[str, Any] = {
     # Mover / Copiar local
     "mover_origin": "",
@@ -34,6 +53,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "ftp_retries": 3,
     "ftp_retry_wait": 10,
     "ftp_verify_size": False,
+    # Backup de la microSD de la Switch (descarga por FTP sin las carpetas de juegos)
+    "ftp_backup_dir": "",
+    "ftp_backup_remote_root": "/",
+    "ftp_backup_incremental": False,
+    "ftp_backup_exclude": list(DEFAULT_BACKUP_EXCLUDE),
+    "ftp_backup_exclude_ext": list(DEFAULT_BACKUP_EXCLUDE_EXT),
     # Papelera del explorador: días que se conservan los elementos borrados (0 = borrado directo)
     "trash_days": 7,
     "trash_enabled": True,
@@ -58,6 +83,31 @@ def parse_favorites(raw: Any) -> list[str]:
             pass
     parts = [p.strip() for chunk in text.splitlines() for p in chunk.split(",")]
     return [p for p in parts if p]
+
+
+def parse_patterns(raw: Any) -> list[str]:
+    """Acepta lista, texto con un patrón por línea o separado por comas."""
+    if raw is None:
+        return []
+    items = raw if isinstance(raw, (list, tuple)) else str(raw).replace(",", "\n").splitlines()
+    out: list[str] = []
+    for item in items:
+        s = str(item).strip().replace("\\", "/")
+        if not s:
+            continue
+        s = ("/" if s.startswith("/") else "") + "/".join(p for p in s.split("/") if p)
+        if s and s != "/" and s not in out:
+            out.append(s)
+    return out
+
+
+def parse_extensions(raw: Any) -> list[str]:
+    out: list[str] = []
+    for item in parse_patterns(raw):
+        ext = item.strip("/").lstrip("*").lstrip(".").lower()
+        if ext and "/" not in ext and ext not in out:
+            out.append(ext)
+    return out
 
 
 def get_data_root() -> str:
@@ -153,6 +203,7 @@ def sanitize_settings(raw: dict[str, Any], data_root: str | None = None) -> dict
         "ftp_tls",
         "ftp_passive",
         "ftp_verify_size",
+        "ftp_backup_incremental",
     ):
         merged[bool_key] = bool(merged.get(bool_key))
 
@@ -169,6 +220,15 @@ def sanitize_settings(raw: dict[str, Any], data_root: str | None = None) -> dict
     merged["ftp_limit_kbps"] = max(0, int(merged.get("ftp_limit_kbps") or 0))
     merged["ftp_retries"] = max(0, int(merged.get("ftp_retries") or 0))
     merged["ftp_retry_wait"] = max(1, int(merged.get("ftp_retry_wait") or 10))
+    # Carpeta de backups: vacía = sin configurar (no se cae a la raíz para no llenar el disco del sistema)
+    backup_dir = str(merged.get("ftp_backup_dir") or "").strip()
+    try:
+        merged["ftp_backup_dir"] = resolve_safe_path(backup_dir, root) if backup_dir else ""
+    except ValueError:
+        merged["ftp_backup_dir"] = ""
+    merged["ftp_backup_remote_root"] = normalize_remote_path(str(merged.get("ftp_backup_remote_root") or "/"))
+    merged["ftp_backup_exclude"] = parse_patterns(merged.get("ftp_backup_exclude"))
+    merged["ftp_backup_exclude_ext"] = parse_extensions(merged.get("ftp_backup_exclude_ext"))
     try:
         trash_days = int(merged.get("trash_days", 7))
     except (TypeError, ValueError):
@@ -197,6 +257,10 @@ class SettingsStore:
             try:
                 data = json.loads(self.path.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
+                    if data.get("ftp_backup_exclude") == _OLD_BACKUP_EXCLUDE:
+                        data["ftp_backup_exclude"] = list(DEFAULT_BACKUP_EXCLUDE)
+                    if data.get("ftp_backup_exclude_ext") == _OLD_BACKUP_EXCLUDE_EXT:
+                        data["ftp_backup_exclude_ext"] = list(DEFAULT_BACKUP_EXCLUDE_EXT)
                     return sanitize_settings(data, self.data_root)
             except (OSError, json.JSONDecodeError):
                 pass
@@ -223,6 +287,8 @@ class SettingsStore:
         data["ftp_password"] = ""
         data["ftp_has_password"] = has_pw
         data["data_root"] = self.data_root
+        data["ftp_backup_exclude_default"] = list(DEFAULT_BACKUP_EXCLUDE)
+        data["ftp_backup_exclude_ext_default"] = list(DEFAULT_BACKUP_EXCLUDE_EXT)
         return data
 
     def update(self, patch: dict[str, Any]) -> dict[str, Any]:

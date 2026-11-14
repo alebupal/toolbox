@@ -2284,6 +2284,9 @@ main() {
             fi
             exit 0 ;;
         --parar) detener_worker; exit ;;
+        --backup | --backup-estado | --backup-parar)
+            echo "El backup de la microSD solo está disponible en el modo unificado (ejecuta 'subeftp $1' sin --legacy dentro del contenedor)." >&2
+            exit 1 ;;
         --subir)
             if (($# == 1)); then
                 lanzar_worker; exit

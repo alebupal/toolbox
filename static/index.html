@@ -483,6 +483,46 @@
           </div>
         </div>
 
+        <div class="card" id="backupCard">
+          <div class="card-header-row">
+            <h2>💾 Backup de la microSD</h2>
+            <div class="inline-group">
+              <button type="button" class="btn btn-sm btn-primary" id="btnBackupStart">▶ Hacer backup</button>
+              <button type="button" class="btn btn-sm btn-danger hidden" id="btnBackupStop">⏹ Detener</button>
+            </div>
+          </div>
+          <p class="muted">Descarga por FTP los ficheros básicos de la microSD de la Switch (configuración de Atmosphère, homebrew, partidas guardadas…) a una carpeta del servidor, <strong>sin juegos ni carpetas pesadas</strong>. Usa la conexión de arriba y no puede ir a la vez que la cola FTP.</p>
+
+          <div class="backup-status hidden" id="backupStatus" aria-live="polite">
+            <div class="qs-row"><strong id="backupStatusText">—</strong> <span class="muted" id="backupStatusExtra"></span></div>
+            <div class="progress-bar thin" role="progressbar" aria-label="Progreso del backup" aria-valuemin="0" aria-valuemax="100" id="backupProgBar"><div class="progress-fill ftp" id="backupProgFill"></div></div>
+            <div class="muted backup-current" id="backupCurrent"></div>
+          </div>
+
+          <div class="form-grid">
+            <label>Carpeta de backups (servidor)
+              <span class="input-with-btn">
+                <input type="text" name="ftp_backup_dir" id="cfgBackupDir" placeholder="/host/mnt/backups/switch" spellcheck="false">
+                <button type="button" class="btn btn-sm btn-icon" data-browse-input="cfgBackupDir" aria-label="Elegir carpeta de backups">📂</button>
+              </span>
+            </label>
+            <label><span class="lbl-row">Carpeta remota a copiar <span class="hint">/ = toda la SD</span></span>
+              <input type="text" name="ftp_backup_remote_root" id="cfgBackupRemoteRoot" placeholder="/" spellcheck="false">
+            </label>
+            <label><span class="lbl-row">Carpetas excluidas <span class="hint">una por línea · sin «/» inicial = en cualquier nivel · admite * y ?</span></span>
+              <textarea id="cfgBackupExclude" rows="4" spellcheck="false"></textarea>
+            </label>
+            <label><span class="lbl-row">Extensiones excluidas <span class="hint">separadas por comas</span></span>
+              <input type="text" id="cfgBackupExcludeExt" placeholder="nsp, nsz, xci, xcz, nca" spellcheck="false">
+            </label>
+          </div>
+          <div class="inline-group">
+            <button type="button" class="btn btn-sm btn-ghost" id="btnBackupExcludeDefaults">↺ Restaurar exclusiones por defecto</button>
+            <span class="muted">Por defecto solo se guardan los ficheros básicos: sin juegos, capturas/vídeos, emuMMC, copias de la NAND ni ROMs.</span>
+          </div>
+          <label class="chk-block"><input type="checkbox" name="ftp_backup_incremental" id="cfgBackupIncremental"> Incremental: actualizar siempre <code>switch-sd/</code> copiando solo lo nuevo o cambiado (si no, cada backup crea <code>switch-sd-AAAAMMDD-HHMMSS/</code>)</label>
+        </div>
+
         <div class="card">
           <h2>🗑 Papelera y apariencia</h2>
           <div class="form-grid">

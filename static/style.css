@@ -650,6 +650,9 @@ td.cell-state { padding: 0 !important; }
    COLAS
    ========================================================================= */
 .queue-summary { padding: 10px 12px; margin-bottom: 10px; }
+.backup-status { margin: 8px 0 12px; }
+.backup-current { white-space: pre-line; overflow-wrap: anywhere; margin-top: 6px; }
+#backupCard textarea { width: 100%; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .qs-row { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; font-variant-numeric: tabular-nums; }
 
 .queue-list {

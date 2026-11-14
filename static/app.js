@@ -27,6 +27,7 @@ const state = {
   dstRemoteData: null,
 
   workers: { mover: null, ftp: null },
+  backup: null,
   ftpSpace: null,
   ftpSpaceUnsupported: false,
   ftpSpaceAt: 0,
@@ -801,6 +802,7 @@ async function refreshStatus() {
       renderQueueSummary();
     }
     if (state.workers.ftp && state.workers.ftp.running) fetchFtpSpace();
+    if (data.backup) renderBackup(data.backup);
   } catch {
     // Silenciar errores transitorios
   }
@@ -2267,7 +2269,7 @@ function renderHistory() {
     $("historyBody").innerHTML = h.items.map((it) => {
       const name = baseName(it.src || it.source_path || "");
       const st = (it.status || "").toUpperCase();
-      const kind = it.kind === "ftp" ? "FTP" : (it.op || it.operation || "mover").toUpperCase();
+      const kind = it.op === "backup" ? "BACKUP SD" : (it.kind === "ftp" ? "FTP" : (it.op || it.operation || "mover").toUpperCase());
       return `<tr>
         <td class="h-date">${escapeHtml(fmtDate(it.finished_at || it.started_at))}</td>
         <td class="h-item">
@@ -2484,6 +2486,12 @@ async function loadSettings() {
     $("cfgFtpPassive").checked = !!s.ftp_passive;
     $("cfgFtpTls").checked = !!s.ftp_tls;
     $("cfgFtpVerifySize").checked = !!s.ftp_verify_size;
+    $("backupCard").classList.toggle("hidden", !Object.prototype.hasOwnProperty.call(s, "ftp_backup_dir"));
+    $("cfgBackupDir").value = s.ftp_backup_dir || "";
+    $("cfgBackupRemoteRoot").value = s.ftp_backup_remote_root || "/";
+    $("cfgBackupExclude").value = (s.ftp_backup_exclude || []).join("\n");
+    $("cfgBackupExcludeExt").value = (s.ftp_backup_exclude_ext || []).join(", ");
+    $("cfgBackupIncremental").checked = !!s.ftp_backup_incremental;
     const hasTrash = Object.prototype.hasOwnProperty.call(s, "trash_days");
     $("cfgTrashDaysWrap").classList.toggle("hidden", !hasTrash);
     if (hasTrash) $("cfgTrashDays").value = s.trash_days;
@@ -2527,6 +2535,15 @@ function collectSettings() {
     ftp_tls: $("cfgFtpTls").checked,
     ftp_verify_size: $("cfgFtpVerifySize").checked,
   };
+  if (!$("backupCard").classList.contains("hidden")) {
+    Object.assign(payload, {
+      ftp_backup_dir: $("cfgBackupDir").value.trim(),
+      ftp_backup_remote_root: $("cfgBackupRemoteRoot").value.trim() || "/",
+      ftp_backup_exclude: $("cfgBackupExclude").value,
+      ftp_backup_exclude_ext: $("cfgBackupExcludeExt").value,
+      ftp_backup_incremental: $("cfgBackupIncremental").checked,
+    });
+  }
   if (!$("cfgTrashDaysWrap").classList.contains("hidden")) payload.trash_days = Number($("cfgTrashDays").value || 7);
   if ($("cfgFtpPassword").value !== "") payload.ftp_password = $("cfgFtpPassword").value;
   return payload;
@@ -2558,7 +2575,7 @@ const autoSave = debounce(() => saveSettings(), 700);
 $("settingsForm").addEventListener("submit", (e) => e.preventDefault());
 $("settingsForm").addEventListener("input", (e) => {
   if (e.target.id === "cfgFtpPassword" || e.target.id === "cfgTheme") return;
-  if (e.target.matches("input[type=text], input[type=number]")) {
+  if (e.target.matches("input[type=text], input[type=number], textarea")) {
     setSaveState("saving", "Cambios sin guardar…");
     autoSave();
   }
@@ -2604,6 +2621,91 @@ $("btnFavAdd").onclick = () => {
     if (state.favorites.includes(p)) return showToast("Esa carpeta ya está en favoritos");
     saveFavorites([...state.favorites, p]);
   }, "Añadir carpeta favorita");
+};
+
+// =========================================================================
+// BACKUP DE LA MICROSD
+// =========================================================================
+function renderBackup(b) {
+  const prev = state.backup;
+  state.backup = b;
+  const running = !!b.running;
+  $("btnBackupStart").classList.toggle("hidden", running);
+  $("btnBackupStop").classList.toggle("hidden", !running);
+  $("btnBackupStop").disabled = !!b.stopping;
+  const box = $("backupStatus");
+  const p = running ? b.progress : b.last;
+  if (!p) {
+    box.classList.add("hidden");
+    return;
+  }
+  box.classList.remove("hidden");
+  const total = Number(p.bytes_total || 0);
+  const done = Number(p.bytes_done || 0);
+  let text;
+  let extra = "";
+  if (running && p.phase === "scanning") {
+    text = b.stopping ? "Deteniendo…" : "Analizando la SD…";
+    extra = `${p.files_total || 0} fichero(s) · ${fmtBytes(total)}`;
+    setProgressBar($("backupProgBar"), $("backupProgFill"), 0, true);
+  } else {
+    const pct = total ? (done * 100) / total : (p.phase === "done" ? 100 : 0);
+    if (running) text = b.stopping ? "Deteniendo…" : `Copiando ${pct.toFixed(1)} %`;
+    else text = { OK: "✓ Último backup completado", ERR: "⚠ Último backup con errores", STOP: "⏹ Último backup detenido" }[p.status] || "Último backup";
+    extra = `${p.files_done || 0}/${p.files_total || 0} fichero(s) · ${fmtBytes(done)} / ${fmtBytes(total)}`;
+    if (!running && p.finished_at) extra += ` · ${fmtDate(p.finished_at)}`;
+    setProgressBar($("backupProgBar"), $("backupProgFill"), pct, false);
+  }
+  $("backupStatusText").textContent = text;
+  $("backupStatusExtra").textContent = extra;
+  const lines = [];
+  if (running && p.current) lines.push(p.current);
+  if (p.target) lines.push(`→ ${p.target}`);
+  if (!running) {
+    const exc = p.excluded_dirs || [];
+    if (exc.length) lines.push(`Excluidas: ${exc.slice(0, 6).join(", ")}${exc.length > 6 ? "…" : ""}`);
+    if (p.files_skipped) lines.push(`Sin cambios: ${p.files_skipped} fichero(s)`);
+    if (p.error) lines.push(`Motivo: ${p.error}`);
+  }
+  $("backupCurrent").textContent = lines.join("\n");
+  if (prev && prev.running && !running && b.last) {
+    const st = b.last.status;
+    showToast(st === "OK" ? "Backup de la microSD completado" : (st === "STOP" ? "Backup de la microSD detenido" : `Backup con errores: ${b.last.error || ""}`), { type: st === "ERR" ? "err" : undefined });
+  }
+}
+
+$("btnBackupStart").onclick = async () => {
+  autoSave.cancel();
+  if (!(await saveSettings())) return;
+  if (!$("cfgBackupDir").value.trim()) {
+    showToast("Elige primero la carpeta de backups del servidor", { type: "err" });
+    $("cfgBackupDir").focus();
+    return;
+  }
+  try {
+    const res = await api("/api/ftp/backup/start", { method: "POST", body: JSON.stringify({}) });
+    renderBackup(res);
+    showToast("Backup de la microSD iniciado");
+  } catch (err) {
+    showToast(err.message, { type: "err" });
+  }
+};
+
+$("btnBackupExcludeDefaults").onclick = async () => {
+  const s = state.settings || {};
+  if (!s.ftp_backup_exclude_default) return;
+  $("cfgBackupExclude").value = s.ftp_backup_exclude_default.join("\n");
+  $("cfgBackupExcludeExt").value = (s.ftp_backup_exclude_ext_default || []).join(", ");
+  autoSave.cancel();
+  if (await saveSettings()) showToast("Exclusiones restauradas a los valores por defecto");
+};
+
+$("btnBackupStop").onclick = async () => {
+  try {
+    renderBackup(await api("/api/ftp/backup/stop", { method: "POST" }));
+  } catch (err) {
+    showToast(err.message, { type: "err" });
+  }
 };
 
 $("btnTestFtp").onclick = async () => {

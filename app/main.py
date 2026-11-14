@@ -24,6 +24,7 @@ from .ftp_worker import list_remote_dirs, test_ftp_connection
 from .models import (
     AddGameRequest,
     AddQueueRequest,
+    BackupStartRequest,
     ChangeDestRequest,
     DeletePathsRequest,
     MkdirRequest,
@@ -36,6 +37,7 @@ from .models import (
 from .mover_worker import calculate_dir_size, file_signature, rename_entry
 from .services import VIRTUAL_ROOT_DIRS, decorate_queue_items, plan_game_upload, search_files
 from .services import list_directory as list_directory_entries
+from .switch_backup import BackupError, BackupJob
 from .switch_utils import SWITCH_EXTENSIONS, detect_switch_type, scan_switch_ftp, switch_sort_key
 from .trash import TrashError, TrashManager
 from .worker_manager import WorkerManager
@@ -48,6 +50,7 @@ settings_store = SettingsStore()
 queue_db = QueueDB()
 worker_manager = WorkerManager(queue_db, settings_store)
 trash_manager = TrashManager(queue_db, get_data_root())
+backup_job = BackupJob(queue_db, settings_store, get_data_root())
 _purge_stop = threading.Event()
 
 
@@ -74,6 +77,7 @@ async def lifespan(_app: FastAPI):
     finally:
         _purge_stop.set()
         worker_manager.stop_all()
+        backup_job.stop()
         queue_db.close()
 
 
@@ -164,6 +168,7 @@ def get_status() -> dict[str, Any]:
     cfg = settings_store.get()
     return {
         "workers": worker_manager.status(),
+        "backup": backup_job.status(),
         "disk_dest": _disk_free_bytes(cfg.get("mover_dest", get_data_root())),
         "data_root": get_data_root(),
     }
@@ -478,6 +483,9 @@ def add_to_queue(req: AddQueueRequest) -> dict[str, Any]:
 
 @app.post("/api/queue/{kind}/start")
 def start_queue(kind: Literal["mover", "ftp"]) -> dict[str, Any]:
+    if kind == "ftp" and backup_job.is_running():
+        # Los servidores FTP de la Switch suelen admitir una sola sesión: no mezclar subidas y backup
+        raise HTTPException(status_code=409, detail="Hay un backup de la microSD en marcha; espera a que termine o detenlo")
     started = worker_manager.start(kind)
     return {"started": started, "status": worker_manager.status()[kind]}
 
@@ -617,6 +625,31 @@ def api_ftp_space() -> dict[str, Any]:
     if space.get("error"):
         res["error"] = space["error"]
     return res
+
+
+@app.get("/api/ftp/backup")
+def api_backup_status() -> dict[str, Any]:
+    return backup_job.status()
+
+
+@app.post("/api/ftp/backup/start")
+def api_backup_start(req: BackupStartRequest | None = None) -> dict[str, Any]:
+    if worker_manager.runners["ftp"].is_running():
+        raise HTTPException(status_code=409, detail="La cola FTP está subiendo; detenla antes de hacer el backup")
+    req = req or BackupStartRequest()
+    try:
+        return backup_job.start(
+            dest_dir=req.dest_dir if (req.dest_dir and req.dest_dir.strip()) else None,
+            incremental=req.incremental,
+            extra_exclude=req.extra_exclude,
+        )
+    except BackupError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/ftp/backup/stop")
+def api_backup_stop() -> dict[str, Any]:
+    return {"stopped": backup_job.stop(), **backup_job.status()}
 
 
 @app.post("/api/ftp/add-game")

@@ -56,6 +56,7 @@ Uso:
       web papelera                  Lista la papelera (restaurar: toolbox mover --restaurar ID)
       web espacio                   Espacio libre en la SD de la Switch (si el FTP lo soporta)
       web buscar-switch             Escanea la LAN buscando Switch desde el servidor
+      web backup [iniciar|parar]    Estado, inicio o parada del backup de la microSD (sin juegos)
   toolbox estado                    Resumen combinado de CLI + Web
   toolbox readme                    Muestra el README completo en terminal
   toolbox -h | --help               Muestra esta ayuda
@@ -66,6 +67,7 @@ Ejemplos rápidos dentro del contenedor:
   docker exec -it toolbox toolbox ftp -s -j -d /install /host/home/juegos/
   docker exec -it toolbox toolbox ftp --buscar-switch
   docker exec -it toolbox toolbox ftp --juego /host/home/juegos/Zelda -d /install -s
+  docker exec -it toolbox toolbox ftp --backup -d /host/mnt/backups/switch
   docker exec -it toolbox toolbox mover --buscar "dune" /host/home/Descargas
   docker exec -it toolbox toolbox mover --listar /host/home/Descargas --orden fecha --desc
   docker exec -it toolbox toolbox mover --papelera
@@ -222,9 +224,34 @@ for hit in found:
 PY
 )"
             ;;
+        backup)
+            local json
+            case "${1:-}" in
+                iniciar | start) json=$(_web_api POST "/api/ftp/backup/start" "{}") || { echo "No se pudo iniciar el backup (¿web caída, cola FTP subiendo o sin carpeta de backups?)."; return 1; } ;;
+                parar | stop) json=$(_web_api POST "/api/ftp/backup/stop") || { echo "Web no accesible en $WEB_BASE"; return 1; } ;;
+                "" | estado) json=$(_web_api GET "/api/ftp/backup") || { echo "Web no accesible en $WEB_BASE"; return 1; } ;;
+                *) echo "Uso: toolbox web backup [estado|iniciar|parar]" >&2; return 1 ;;
+            esac
+            printf '%s' "$json" | python3 -c "$(cat << 'PY'
+import json, sys
+d = json.load(sys.stdin)
+p = d.get("progress") if d.get("running") else None
+if p:
+    print(f"Backup EN MARCHA ({p.get('phase')}) -> {p.get('target')}")
+    print(f"  {p.get('files_done', 0)}/{p.get('files_total', 0)} fichero(s) | {p.get('bytes_done', 0)}/{p.get('bytes_total', 0)} B | {p.get('current', '')}")
+elif d.get("last"):
+    l = d["last"]
+    print(f"Último backup: {l.get('status')} | {l.get('files_done', 0)}/{l.get('files_total', 0)} fichero(s) | {l.get('bytes_done', 0)} B -> {l.get('target')}")
+    if l.get("error"):
+        print(f"  Motivo: {l['error']}")
+else:
+    print("Sin backups desde que arrancó la web.")
+PY
+)"
+            ;;
         *)
             echo "Subcomando web desconocido: $sub" >&2
-            echo "Opciones: estado | cola [mover|ftp] | iniciar <mover|ftp> | parar <mover|ftp> | logs [tipo] [N] | historial [tipo] [N] | papelera | espacio | buscar-switch" >&2
+            echo "Opciones: estado | cola [mover|ftp] | iniciar <mover|ftp> | parar <mover|ftp> | logs [tipo] [N] | historial [tipo] [N] | papelera | espacio | buscar-switch | backup [estado|iniciar|parar]" >&2
             return 1
             ;;
     esac

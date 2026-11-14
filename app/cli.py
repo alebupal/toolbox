@@ -292,6 +292,57 @@ class ToolboxClient:
             out["error"] = res["error"]
         return out
 
+    # --- Backup de la microSD ------------------------------------------------
+    def backup_status(self) -> dict[str, Any] | None:
+        """Estado del backup de la web, o None si la web no responde."""
+        if not self.is_web_running():
+            return None
+        return self._http("GET", "/api/ftp/backup")
+
+    def backup_start(self, dest_dir: str = "", incremental: bool | None = None, extra_exclude: list[str] | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {"dest_dir": dest_dir or None, "incremental": incremental, "extra_exclude": extra_exclude or None}
+        return self._http("POST", "/api/ftp/backup/start", payload, timeout=20.0)
+
+    def backup_stop(self) -> dict[str, Any]:
+        if not self.is_web_running():
+            raise RuntimeError("El servidor web de Toolbox no está respondiendo.")
+        return self._http("POST", "/api/ftp/backup/stop")
+
+    def backup_foreground(
+        self, dest_dir: str = "", incremental: bool | None = None, extra_exclude: list[str] | None = None
+    ) -> dict[str, Any]:
+        """Backup en primer plano (sin web): Ctrl+C lo detiene. Guarda log e historial en SQLite."""
+        import threading
+
+        from .switch_backup import BackupRun, record_history
+
+        stop = threading.Event()
+        db = self._local_db()
+        try:
+            run = BackupRun(
+                self._local_settings().get(),
+                get_data_root(),
+                dest_dir=dest_dir or None,
+                incremental=incremental,
+                extra_exclude=extra_exclude,
+                stop_event=stop,
+                log_cb=db.add_log,
+                progress_cb=lambda p: _print_backup_line(p, live=True),
+            )
+            print(f"Backup de la microSD -> {run.target}")
+            import signal
+
+            # Ctrl+C pide una parada limpia (el fichero a medias queda como .part y se reanuda la próxima vez)
+            prev = signal.signal(signal.SIGINT, lambda *_a: stop.set())
+            try:
+                result = run.run()
+            finally:
+                signal.signal(signal.SIGINT, prev)
+            record_history(db, run, result)
+            return result
+        finally:
+            db.close()
+
     def _trash(self, db: QueueDB):
         from .trash import TrashManager
 
@@ -810,6 +861,139 @@ def _print_ftp_space(res: dict[str, Any]) -> int:
     return 0
 
 
+_PHASES = {"scanning": "Analizando la SD", "downloading": "Copiando", "done": "Terminado"}
+
+
+def _print_backup_line(p: dict[str, Any], live: bool = False) -> None:
+    phase = _PHASES.get(p.get("phase", ""), p.get("phase", ""))
+    total_b = int(p.get("bytes_total") or 0)
+    done_b = int(p.get("bytes_done") or 0)
+    if p.get("phase") == "scanning":
+        text = f"{phase}… {p.get('files_total', 0)} fichero(s), {_fmt_bytes(total_b)} · {p.get('current', '')}"
+    else:
+        pct = (done_b * 100.0 / total_b) if total_b else 100.0
+        text = (
+            f"{phase}: {pct:5.1f}% · {p.get('files_done', 0)}/{p.get('files_total', 0)} fichero(s) · "
+            f"{_fmt_bytes(done_b)}/{_fmt_bytes(total_b)} · {p.get('current', '')}"
+        )
+    if live and sys.stdout.isatty():
+        width = 120
+        try:
+            width = os.get_terminal_size().columns - 1
+        except OSError:
+            pass
+        print("\r" + text[:width].ljust(width), end="", flush=True)
+    elif not live:
+        print("  " + text)
+
+
+def _print_backup_result(p: dict[str, Any]) -> int:
+    if sys.stdout.isatty():
+        print()
+    st = p.get("status", "")
+    label = {"OK": "✓ Backup completado", "ERR": "⚠ Backup con errores", "STOP": "⏹ Backup detenido"}.get(st, st)
+    print(f"{label}: {p.get('files_done', 0)}/{p.get('files_total', 0)} fichero(s), {_fmt_bytes(p.get('bytes_done', 0))}")
+    print(f"  Carpeta: {p.get('target', '')}")
+    if p.get("files_skipped"):
+        print(f"  Sin cambios (ya estaban): {p['files_skipped']} fichero(s)")
+    exc_dirs = p.get("excluded_dirs") or []
+    if exc_dirs:
+        print(f"  Carpetas de juegos excluidas ({len(exc_dirs)}): {', '.join(exc_dirs[:8])}{' …' if len(exc_dirs) > 8 else ''}")
+    if p.get("excluded_files"):
+        print(f"  Ficheros de juego excluidos: {p['excluded_files']} ({_fmt_bytes(p.get('excluded_bytes', 0))})")
+    if p.get("error"):
+        print(f"  Motivo: {p['error']}")
+    for err in (p.get("errors") or [])[:10]:
+        print(f"    - {err}")
+    return 0 if st == "OK" else 1
+
+
+def _print_backup_status(client: ToolboxClient) -> int:
+    st = client.backup_status()
+    if st is None:
+        print("La web no responde: no hay backup en segundo plano. Lánzalo con: subeftp --backup")
+        return 0
+    if st.get("running") and st.get("progress"):
+        print("Backup de la microSD EN MARCHA" + (" (deteniéndose)" if st.get("stopping") else ""))
+        _print_backup_line(st["progress"])
+        print(f"  Carpeta: {st['progress'].get('target', '')}")
+        return 0
+    if st.get("last"):
+        print("Último backup de la microSD:")
+        return _print_backup_result_quiet(st["last"])
+    print("No se ha hecho ningún backup desde que arrancó la web (ver: subeftp --historial).")
+    return 0
+
+
+def _print_backup_result_quiet(p: dict[str, Any]) -> int:
+    print(f"  {_fmt_date(p.get('finished_at'))}  [{p.get('status', '')}]  {p.get('files_done', 0)}/{p.get('files_total', 0)} fichero(s), "
+          f"{_fmt_bytes(p.get('bytes_done', 0))} -> {p.get('target', '')}")
+    if p.get("error"):
+        print(f"  Motivo: {p['error']}")
+    return 0
+
+
+def _follow_backup(client: ToolboxClient) -> int:
+    """Sigue el backup de la web hasta que termine. Ctrl+C deja de mirar (el backup continúa)."""
+    try:
+        while True:
+            st = client.backup_status() or {}
+            if st.get("running") and st.get("progress"):
+                _print_backup_line(st["progress"], live=True)
+                time.sleep(1.0)
+                continue
+            if st.get("last"):
+                return _print_backup_result(st["last"])
+            return 0
+    except KeyboardInterrupt:
+        print("\nSigue en segundo plano (consulta: subeftp --backup-estado · detener: subeftp --backup-parar).")
+        return 0
+
+
+def _run_backup_cli(client: ToolboxClient, args: list[str]) -> int:
+    dest = ""
+    incremental: bool | None = None
+    follow = False
+    extra: list[str] = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-d", "--destino") and i + 1 < len(args):
+            dest = args[i + 1]
+            i += 2
+            continue
+        if a in ("-x", "--excluir") and i + 1 < len(args):
+            extra.append(args[i + 1])
+            i += 2
+            continue
+        if a.startswith("--destino="):
+            dest = a.split("=", 1)[1]
+        elif a.startswith("--excluir="):
+            extra.append(a.split("=", 1)[1])
+        elif a in ("-n", "--incremental"):
+            incremental = True
+        elif a == "--completo":
+            incremental = False
+        elif a in ("-f", "--seguir", "--esperar"):
+            follow = True
+        else:
+            print(f"Opción no reconocida en --backup: {a}", file=sys.stderr)
+            return 1
+        i += 1
+    if dest:
+        dest = str(Path(dest).expanduser().resolve())
+    if client.is_web_running():
+        st = client.backup_start(dest, incremental, extra)
+        target = (st.get("progress") or {}).get("target", "")
+        print(f"Backup de la microSD iniciado en segundo plano -> {target}")
+        if follow or sys.stdout.isatty():
+            return _follow_backup(client)
+        print("Consulta el progreso con: subeftp --backup-estado")
+        return 0
+    print("(La web no responde: el backup se hace en primer plano; Ctrl+C lo detiene.)")
+    return _print_backup_result(client.backup_foreground(dest, incremental, extra))
+
+
 def _report_delete(res: dict[str, Any]) -> None:
     trashed = res.get("trashed", [])
     if trashed:
@@ -877,6 +1061,11 @@ Uso:
   subeftp --juego RUTA... [-d DEST] [-s]
                                       Encola juego(s) completo(s): Base -> Update -> DLC
   subeftp --espacio                   Consulta el espacio libre en la SD (si el servidor lo soporta)
+  subeftp --backup [-d CARPETA] [-n|--completo] [-x PATRON]... [-f]
+                                      Copia la microSD al servidor SIN las carpetas de juegos
+                                      (-n incremental en CARPETA/switch-sd, -f espera a que termine)
+  subeftp --backup-estado | --backup-parar
+                                      Progreso / detención del backup de la microSD
   subeftp --listar [RUTA] [--orden nombre|fecha|tamano] [--desc]
                                       Lista una carpeta local con fecha de modificación
   subeftp --buscar TEXTO [RUTA]       Busca recursivamente en las carpetas locales
@@ -1173,12 +1362,19 @@ def _edit_settings_cli(client: ToolboxClient, kind: str) -> None:
             ("ftp_local_root", "Carpeta local inicial"),
             ("ftp_remote_dir", "Carpeta remota por defecto"),
             ("ftp_limit_kbps", "Límite subida KB/s"),
+            ("ftp_backup_dir", "Carpeta local de backups de la SD"),
+            ("ftp_backup_exclude", "Carpetas excluidas del backup (comas; 'defecto' = restaurar)"),
+            ("ftp_backup_exclude_ext", "Extensiones excluidas del backup (comas; 'defecto' = restaurar)"),
         ]
     )
     for key, label in fields:
         cur = cfg.get(key, "")
+        if isinstance(cur, list):
+            cur = ", ".join(cur)
         val = input(f"  {label} [{cur}]: ").strip()
-        if val != "":
+        if val.lower() == "defecto" and key.startswith("ftp_backup_exclude"):
+            patch[key] = cfg.get(f"{key}_default") or []
+        elif val != "":
             patch[key] = int(val) if key.endswith(("kbps", "port")) and val.isdigit() else val
     if kind == "ftp":
         pw = input("  Nueva contraseña FTP (Enter para mantener): ").strip()
@@ -1206,6 +1402,7 @@ def _interactive_menu(client: ToolboxClient, kind: str) -> int:
             print("  3) Ver solo pendientes            8) Editar configuración FTP")
             print("  4) Ver progreso en vivo           9) Ver registro (log)")
             print("  5) Iniciar / Detener subida       e) Espacio libre en la SD")
+            print("  b) Backup de la microSD (sin juegos)")
             print("  i) Historial   t) Papelera        h) Ayuda   0) Salir")
         print("=" * 76)
 
@@ -1258,12 +1455,49 @@ def _interactive_menu(client: ToolboxClient, kind: str) -> int:
                     print(f"  Eliminados: {client.clear_history(kind)}")
             elif op == "t":
                 _interactive_trash(client)
+            elif op == "b" and kind == "ftp":
+                _interactive_backup(client)
             elif op == "e" and kind == "ftp":
                 print("  Consultando el espacio libre en el servidor FTP...")
                 _print_ftp_space(client.ftp_space())
         except Exception as exc:
             print(f"  Error: {exc}")
         input("\n  Pulsa Enter para continuar...")
+
+
+def _interactive_backup(client: ToolboxClient) -> None:
+    st = client.backup_status()
+    if st and st.get("running"):
+        _print_backup_status(client)
+        if _ask_yes_no("  ¿Detener el backup?", False):
+            client.backup_stop()
+            print("  Detención solicitada.")
+        elif _ask_yes_no("  ¿Ver el progreso en vivo? (Ctrl+C vuelve)", True):
+            _follow_backup(client)
+        return
+    cfg = client.get_settings()
+    print("\n=== Backup de la microSD (sin carpetas de juegos) ===")
+    print(f"  Carpeta remota (raíz de la SD): {cfg.get('ftp_backup_remote_root') or '/'}")
+    print(f"  Excluye carpetas: {', '.join(cfg.get('ftp_backup_exclude') or []) or '(ninguna)'}")
+    print(f"  Excluye ficheros: {', '.join('.' + e for e in cfg.get('ftp_backup_exclude_ext') or []) or '(ninguno)'}")
+    base = cfg.get("ftp_backup_dir") or ""
+    val = input(f"  Carpeta local de backups [{base or 'sin configurar'}]: ").strip()
+    dest = str(Path(val).expanduser().resolve()) if val else base
+    if not dest:
+        print("  Indica una carpeta de destino (o configúrala con 8).")
+        return
+    if val and _ask_yes_no("  ¿Guardar esa carpeta como carpeta de backups por defecto?", True):
+        client.update_settings({"ftp_backup_dir": dest})
+    incremental = _ask_yes_no(
+        "  ¿Incremental? (S = actualizar switch-sd/ y copiar solo lo cambiado · N = carpeta nueva con fecha)",
+        bool(cfg.get("ftp_backup_incremental")),
+    )
+    if client.is_web_running():
+        client.backup_start(dest, incremental)
+        print("  Backup iniciado en segundo plano (visible en la web). Ctrl+C deja de mirar.")
+        _follow_backup(client)
+    else:
+        _print_backup_result(client.backup_foreground(dest, incremental))
 
 
 def _interactive_trash(client: ToolboxClient) -> None:
@@ -1500,6 +1734,14 @@ def run_cli(argv: list[str], client: ToolboxClient | None = None) -> int:
         return 0
     if kind == "ftp" and first == "--espacio":
         return _print_ftp_space(cli.ftp_space())
+    if kind == "ftp" and first == "--backup":
+        return _run_backup_cli(cli, args[1:])
+    if kind == "ftp" and first == "--backup-estado":
+        return _print_backup_status(cli)
+    if kind == "ftp" and first == "--backup-parar":
+        res = cli.backup_stop()
+        print("Detención del backup solicitada." if res.get("stopped") else "No hay ningún backup en marcha.")
+        return 0
     if kind == "ftp" and first == "--juego":
         dest = ""
         start_now = False
