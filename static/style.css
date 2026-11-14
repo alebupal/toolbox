@@ -652,6 +652,10 @@ td.cell-state { padding: 0 !important; }
 .queue-summary { padding: 10px 12px; margin-bottom: 10px; }
 .backup-status { margin: 8px 0 12px; }
 .backup-current { white-space: pre-line; overflow-wrap: anywhere; margin-top: 6px; }
+.chk-block.chk-desc { align-items: flex-start; }
+.chk-block.chk-desc input[type="checkbox"] { margin-top: 1px; flex: none; }
+.chk-desc .hint { display: block; margin-top: 2px; }
+#backupCard .form-grid { align-items: start; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
 #backupCard textarea { width: 100%; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .qs-row { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; font-variant-numeric: tabular-nums; }
 
@@ -839,7 +843,7 @@ td.cell-state { padding: 0 !important; }
   font-size: 12px;
   color: var(--muted);
 }
-.form-grid label > input, .form-grid label > select { color: var(--text); }
+.form-grid label > input, .form-grid label > select, .form-grid label > textarea { color: var(--text); }
 .lbl-row { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
 .input-with-btn, .input-unit { display: flex; gap: 6px; align-items: center; }
 .input-with-btn input, .input-unit input { flex: 1; min-width: 0; }

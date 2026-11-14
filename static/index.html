@@ -506,21 +506,27 @@
                 <button type="button" class="btn btn-sm btn-icon" data-browse-input="cfgBackupDir" aria-label="Elegir carpeta de backups">📂</button>
               </span>
             </label>
-            <label><span class="lbl-row">Carpeta remota a copiar <span class="hint">/ = toda la SD</span></span>
-              <input type="text" name="ftp_backup_remote_root" id="cfgBackupRemoteRoot" placeholder="/" spellcheck="false">
+            <label>Carpeta remota a copiar
+              <input type="text" name="ftp_backup_remote_root" id="cfgBackupRemoteRoot" placeholder="/" spellcheck="false" aria-describedby="hintBackupRemote">
+              <span class="hint" id="hintBackupRemote">/ = toda la SD</span>
             </label>
-            <label><span class="lbl-row">Carpetas excluidas <span class="hint">una por línea · sin «/» inicial = en cualquier nivel · admite * y ?</span></span>
-              <textarea id="cfgBackupExclude" rows="4" spellcheck="false"></textarea>
+            <label>Carpetas excluidas
+              <textarea id="cfgBackupExclude" rows="10" spellcheck="false" aria-describedby="hintBackupExclude"></textarea>
+              <span class="hint" id="hintBackupExclude">Una por línea. Con «/» inicial solo en la raíz de la SD; sin ella, en cualquier nivel. Admite * y ?</span>
             </label>
-            <label><span class="lbl-row">Extensiones excluidas <span class="hint">separadas por comas</span></span>
-              <input type="text" id="cfgBackupExcludeExt" placeholder="nsp, nsz, xci, xcz, nca" spellcheck="false">
+            <label>Extensiones excluidas
+              <input type="text" id="cfgBackupExcludeExt" placeholder="nsp, nsz, xci, xcz, nca" spellcheck="false" aria-describedby="hintBackupExt">
+              <span class="hint" id="hintBackupExt">Separadas por comas</span>
             </label>
           </div>
           <div class="inline-group">
             <button type="button" class="btn btn-sm btn-ghost" id="btnBackupExcludeDefaults">↺ Restaurar exclusiones por defecto</button>
             <span class="muted">Por defecto solo se guardan los ficheros básicos: sin juegos, capturas/vídeos, emuMMC, copias de la NAND ni ROMs.</span>
           </div>
-          <label class="chk-block"><input type="checkbox" name="ftp_backup_incremental" id="cfgBackupIncremental"> Incremental: actualizar siempre <code>switch-sd/</code> copiando solo lo nuevo o cambiado (si no, cada backup crea <code>switch-sd-AAAAMMDD-HHMMSS/</code>)</label>
+          <label class="chk-block chk-desc"><input type="checkbox" name="ftp_backup_incremental" id="cfgBackupIncremental">
+            <span><strong>Backup incremental</strong>
+              <span class="hint">Actualiza siempre la carpeta <code>switch-sd</code> y copia solo lo nuevo o cambiado. Desactivado: cada backup crea una carpeta nueva con la fecha (<code>switch-sd-AAAAMMDD-HHMMSS</code>).</span></span>
+          </label>
         </div>
 
         <div class="card">
