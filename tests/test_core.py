@@ -486,6 +486,22 @@ class FeatureTests(unittest.TestCase):
     def setUp(self) -> None:
         self.case_dir = tempfile.mkdtemp(prefix="case_", dir=self.data_root)
 
+    def test_index_versions_static_by_content(self) -> None:
+        import hashlib
+        import re
+
+        r = self.api.get("/")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("no-cache", r.headers["cache-control"])
+        refs = dict(re.findall(r"/static/([\w.-]+)\?v=([0-9a-f]+)", r.text))
+        app_js = (Path(self.main.STATIC_DIR) / "app.js").read_bytes()
+        # Cambia con el contenido: nunca se queda un JS antiguo en caché junto al HTML nuevo
+        self.assertEqual(refs["app.js"], hashlib.sha256(app_js).hexdigest()[:10])
+        self.assertIn("style.css", refs)
+        settings = self.api.put("/api/settings", json={"ftp_backup_keep": 4}).json()
+        self.assertEqual(settings["ftp_backup_keep"], 4)
+        self.assertEqual(self.api.get("/api/settings").json()["ftp_backup_keep"], 4)
+
     def _write(self, rel: str, data: bytes = b"x", mtime: float | None = None) -> str:
         path = os.path.join(self.case_dir, rel)
         os.makedirs(os.path.dirname(path), exist_ok=True)

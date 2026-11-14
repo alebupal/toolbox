@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import (
@@ -147,9 +149,33 @@ def _collect_files_recursive(folder: str, include_hidden: bool = False) -> list[
     return files
 
 
+_STATIC_REF_RE = re.compile(r'(/static/([\w.-]+\.(?:js|css|svg|png)))(\?v=[^"\']*)?')
+_index_cache: dict[str, Any] = {}
+
+
+def _static_version(name: str) -> str:
+    try:
+        return hashlib.sha256((STATIC_DIR / name).read_bytes()).hexdigest()[:10]
+    except OSError:
+        return "0"
+
+
+def render_index() -> str:
+    """index.html con ?v=<hash del contenido> en cada /static/…: tras actualizar, el navegador
+    (o un proxy con caché de estáticos, como NPM «Cache Assets») nunca mezcla JS/CSS antiguos
+    con el HTML nuevo. Se recalcula solo si cambia algún fichero estático."""
+    files = sorted(STATIC_DIR.glob("*"))
+    sig = tuple((f.name, f.stat().st_mtime_ns, f.stat().st_size) for f in files if f.is_file())
+    if _index_cache.get("sig") != sig:
+        html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        _index_cache["html"] = _STATIC_REF_RE.sub(lambda m: f"{m.group(1)}?v={_static_version(m.group(2))}", html)
+        _index_cache["sig"] = sig
+    return _index_cache["html"]
+
+
 @app.get("/")
-def index() -> FileResponse:
-    return FileResponse(str(STATIC_DIR / "index.html"))
+def index() -> HTMLResponse:
+    return HTMLResponse(render_index(), headers={"Cache-Control": "no-cache, must-revalidate"})
 
 
 @app.get("/favicon.ico", include_in_schema=False)

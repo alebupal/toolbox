@@ -43,7 +43,7 @@ toolbox/
 │   └── docker-publish.yml      # Construye y publica alebupal/toolbox:latest (amd64 + arm64)
 ├── app/
 │   ├── __init__.py
-│   ├── main.py                 # API REST, explorador /host, endpoint /api/readme y estáticos
+│   ├── main.py                 # API REST, explorador /host, endpoint /api/readme y estáticos (index.html con ?v=hash del contenido)
 │   ├── cli.py                  # CLI unificado (mover/subeftp en Docker): habla con la API o, si no responde, con SQLite
 │   ├── models.py               # Esquemas Pydantic
 │   ├── config.py               # settings.json (permisos 600) y validación de rutas
