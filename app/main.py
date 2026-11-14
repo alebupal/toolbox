@@ -151,6 +151,12 @@ def index() -> FileResponse:
     return FileResponse(str(STATIC_DIR / "index.html"))
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> FileResponse:
+    # Los navegadores piden /favicon.ico aunque la página enlace el SVG
+    return FileResponse(str(STATIC_DIR / "favicon.svg"), media_type="image/svg+xml")
+
+
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}

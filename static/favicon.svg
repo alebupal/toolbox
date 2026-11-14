@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#171d27"/>
+  <!-- Asa -->
+  <path d="M23 21v-5a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4v5" fill="none" stroke="#9aa7b8" stroke-width="4" stroke-linecap="round"/>
+  <!-- Cuerpo -->
+  <rect x="9" y="20" width="46" height="34" rx="5" fill="#e5484d"/>
+  <!-- Tapa -->
+  <rect x="9" y="20" width="46" height="11" rx="5" fill="#f2666a"/>
+  <rect x="9" y="27" width="46" height="4" fill="#c63a3f"/>
+  <!-- Cierre -->
+  <rect x="27" y="25" width="10" height="11" rx="2" fill="#ffd166"/>
+  <rect x="30" y="29" width="4" height="4" rx="1" fill="#171d27"/>
+</svg>
