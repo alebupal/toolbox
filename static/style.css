@@ -657,6 +657,19 @@ td.cell-state { padding: 0 !important; }
 .chk-desc .hint { display: block; margin-top: 2px; }
 #backupCard .form-grid { align-items: start; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
 #backupCard textarea { width: 100%; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.backup-sim { margin-top: 10px; display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.backup-sim h4 { margin: 0 0 4px; font-size: 13px; }
+.backup-sim table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.backup-sim td { padding: 3px 4px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.backup-sim td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--muted); }
+#backupCard .input-unit { max-width: 220px; }
+.backup-list-head { margin-top: 14px; }
+.backup-list-head .subhead { margin: 0; }
+.backup-list { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 6px; }
+.backup-list li { display: flex; align-items: center; gap: 10px; justify-content: space-between; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.backup-list .bk-info { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.backup-list .bk-name { font-weight: 600; overflow-wrap: anywhere; }
+.backup-list li button { flex: none; }
 .qs-row { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; font-variant-numeric: tabular-nums; }
 
 .queue-list {

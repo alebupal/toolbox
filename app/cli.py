@@ -299,8 +299,12 @@ class ToolboxClient:
             return None
         return self._http("GET", "/api/ftp/backup")
 
-    def backup_start(self, dest_dir: str = "", incremental: bool | None = None, extra_exclude: list[str] | None = None) -> dict[str, Any]:
-        payload: dict[str, Any] = {"dest_dir": dest_dir or None, "incremental": incremental, "extra_exclude": extra_exclude or None}
+    def backup_start(
+        self, dest_dir: str = "", incremental: bool | None = None, extra_exclude: list[str] | None = None, simulate: bool = False
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "dest_dir": dest_dir or None, "incremental": incremental, "extra_exclude": extra_exclude or None, "simulate": simulate
+        }
         return self._http("POST", "/api/ftp/backup/start", payload, timeout=20.0)
 
     def backup_stop(self) -> dict[str, Any]:
@@ -308,8 +312,42 @@ class ToolboxClient:
             raise RuntimeError("El servidor web de Toolbox no está respondiendo.")
         return self._http("POST", "/api/ftp/backup/stop")
 
+    def backup_list(self, path: str = "") -> dict[str, Any]:
+        if self.is_web_running():
+            qs = f"?{urllib.parse.urlencode({'path': path})}" if path else ""
+            return self._http("GET", f"/api/ftp/backup/list{qs}", timeout=60.0)
+        from .switch_backup import list_backups
+
+        base = path or self._local_settings().get().get("ftp_backup_dir", "")
+        if not base:
+            return {"path": "", "items": []}
+        safe = resolve_safe_path(base, get_data_root())
+        return {"path": safe, "items": list_backups(safe)}
+
+    def backup_restore(self, path: str, start: bool = False) -> dict[str, Any]:
+        if self.is_web_running():
+            return self._http("POST", "/api/ftp/backup/restore", {"path": path, "start": start}, timeout=600.0)
+        from .switch_backup import plan_restore
+
+        plan = plan_restore(path, get_data_root(), self._local_settings().get().get("ftp_backup_remote_root") or "/")
+        db = self._local_db()
+        try:
+            inserted = db.add_items(plan["entries"])
+            if inserted:
+                db.add_log("ftp", "INFO", f"Restauración a la SD encolada desde {path}: {len(inserted)} archivo(s)")
+        finally:
+            db.close()
+        return {
+            "root": plan["root"],
+            "added": len(inserted),
+            "skipped": len(plan["entries"]) - len(inserted),
+            "bytes": sum(int(e["size_bytes"]) for e in plan["entries"]),
+            "started": False,
+        }
+
     def backup_foreground(
-        self, dest_dir: str = "", incremental: bool | None = None, extra_exclude: list[str] | None = None
+        self, dest_dir: str = "", incremental: bool | None = None, extra_exclude: list[str] | None = None,
+        simulate: bool = False,
     ) -> dict[str, Any]:
         """Backup en primer plano (sin web): Ctrl+C lo detiene. Guarda log e historial en SQLite."""
         import threading
@@ -328,8 +366,9 @@ class ToolboxClient:
                 stop_event=stop,
                 log_cb=db.add_log,
                 progress_cb=lambda p: _print_backup_line(p, live=True),
+                simulate=simulate,
             )
-            print(f"Backup de la microSD -> {run.target}")
+            print("Simulación del backup de la microSD (no se descarga nada)" if simulate else f"Backup de la microSD -> {run.target}")
             import signal
 
             # Ctrl+C pide una parada limpia (el fichero a medias queda como .part y se reanuda la próxima vez)
@@ -861,14 +900,16 @@ def _print_ftp_space(res: dict[str, Any]) -> int:
     return 0
 
 
-_PHASES = {"scanning": "Analizando la SD", "downloading": "Copiando", "done": "Terminado"}
+_PHASES = {"scanning": "Analizando la SD", "downloading": "Copiando", "compressing": "Comprimiendo", "done": "Terminado"}
 
 
 def _print_backup_line(p: dict[str, Any], live: bool = False) -> None:
     phase = _PHASES.get(p.get("phase", ""), p.get("phase", ""))
     total_b = int(p.get("bytes_total") or 0)
     done_b = int(p.get("bytes_done") or 0)
-    if p.get("phase") == "scanning":
+    if p.get("phase") == "compressing":
+        text = f"{phase}… {p.get('current', '')}"
+    elif p.get("phase") == "scanning":
         text = f"{phase}… {p.get('files_total', 0)} fichero(s), {_fmt_bytes(total_b)} · {p.get('current', '')}"
     else:
         pct = (done_b * 100.0 / total_b) if total_b else 100.0
@@ -891,6 +932,8 @@ def _print_backup_result(p: dict[str, Any]) -> int:
     if sys.stdout.isatty():
         print()
     st = p.get("status", "")
+    if st == "SIM":
+        return _print_simulation(p)
     label = {"OK": "✓ Backup completado", "ERR": "⚠ Backup con errores", "STOP": "⏹ Backup detenido"}.get(st, st)
     print(f"{label}: {p.get('files_done', 0)}/{p.get('files_total', 0)} fichero(s), {_fmt_bytes(p.get('bytes_done', 0))}")
     print(f"  Carpeta: {p.get('target', '')}")
@@ -901,11 +944,59 @@ def _print_backup_result(p: dict[str, Any]) -> int:
         print(f"  Carpetas de juegos excluidas ({len(exc_dirs)}): {', '.join(exc_dirs[:8])}{' …' if len(exc_dirs) > 8 else ''}")
     if p.get("excluded_files"):
         print(f"  Ficheros de juego excluidos: {p['excluded_files']} ({_fmt_bytes(p.get('excluded_bytes', 0))})")
+    if p.get("pruned"):
+        print(f"  Backups antiguos borrados: {', '.join(p['pruned'])}")
     if p.get("error"):
         print(f"  Motivo: {p['error']}")
     for err in (p.get("errors") or [])[:10]:
         print(f"    - {err}")
     return 0 if st == "OK" else 1
+
+
+def _print_simulation(p: dict[str, Any]) -> int:
+    print(f"Simulación: se copiarían {p.get('files_total', 0)} fichero(s), {_fmt_bytes(p.get('bytes_total', 0))}")
+    print(f"  Destino: {p.get('target', '')}")
+    tops = p.get("top_dirs") or []
+    if tops:
+        print("  Se copia:")
+        for g in tops:
+            print(f"    {_fmt_bytes(g['bytes']):>10}  {g['files']:>6} fich.  {g['path']}")
+    excl = p.get("excluded_detail") or []
+    if excl:
+        total = sum(int(e["bytes"]) for e in excl)
+        print(f"  Se excluye ({_fmt_bytes(total)} en carpetas):")
+        for e in sorted(excl, key=lambda e: -int(e["bytes"])):
+            print(f"    {_fmt_bytes(e['bytes']):>10}  {e['files']:>6} fich.  {e['path']}")
+    if p.get("excluded_files"):
+        print(f"  Ficheros de juego sueltos excluidos: {p['excluded_files']} ({_fmt_bytes(p.get('excluded_bytes', 0))})")
+    for err in (p.get("errors") or [])[:10]:
+        print(f"    - {err}")
+    if p.get("error"):
+        print(f"  Motivo: {p['error']}")
+        return 1
+    return 0
+
+
+def _print_backup_list(data: dict[str, Any]) -> list[dict[str, Any]]:
+    items = data.get("items") or []
+    if not data.get("path"):
+        print("  No hay carpeta de backups configurada (subeftp --backup -d CARPETA o ajuste ftp_backup_dir).")
+        return []
+    print(f"Backups en {data['path']}:")
+    if not items:
+        print("  (ninguno)")
+    for i, b in enumerate(items, 1):
+        kind = "tar.gz" if b["kind"] == "tar" else ("incremental" if b.get("incremental") else "carpeta")
+        files = f", {b['files']} fich." if b.get("files") is not None else ""
+        print(f"  {i:>3}) {_fmt_date(b.get('mtime'))}  {_fmt_bytes(b.get('size')):>10}{files}  [{kind}] {b['name']}")
+    return items
+
+
+def _print_restore_result(res: dict[str, Any]) -> None:
+    print(
+        f"Restauración encolada en la cola FTP: {res.get('added', 0)} archivo(s), {_fmt_bytes(res.get('bytes', 0))}"
+        f" (omitidos: {res.get('skipped', 0)}) desde {res.get('root', '')}"
+    )
 
 
 def _print_backup_status(client: ToolboxClient) -> int:
@@ -918,6 +1009,9 @@ def _print_backup_status(client: ToolboxClient) -> int:
         _print_backup_line(st["progress"])
         print(f"  Carpeta: {st['progress'].get('target', '')}")
         return 0
+    if st.get("last") and st["last"].get("status") == "SIM":
+        print("Última simulación del backup:")
+        return _print_simulation(st["last"])
     if st.get("last"):
         print("Último backup de la microSD:")
         return _print_backup_result_quiet(st["last"])
@@ -954,6 +1048,7 @@ def _run_backup_cli(client: ToolboxClient, args: list[str]) -> int:
     dest = ""
     incremental: bool | None = None
     follow = False
+    simulate = False
     extra: list[str] = []
     i = 0
     while i < len(args):
@@ -976,6 +1071,8 @@ def _run_backup_cli(client: ToolboxClient, args: list[str]) -> int:
             incremental = False
         elif a in ("-f", "--seguir", "--esperar"):
             follow = True
+        elif a in ("--simular", "--dry-run"):
+            simulate = True
         else:
             print(f"Opción no reconocida en --backup: {a}", file=sys.stderr)
             return 1
@@ -983,15 +1080,44 @@ def _run_backup_cli(client: ToolboxClient, args: list[str]) -> int:
     if dest:
         dest = str(Path(dest).expanduser().resolve())
     if client.is_web_running():
-        st = client.backup_start(dest, incremental, extra)
+        st = client.backup_start(dest, incremental, extra, simulate)
         target = (st.get("progress") or {}).get("target", "")
+        if simulate:
+            print("Simulación del backup iniciada (no se descarga nada)…")
+            return _follow_backup(client)
         print(f"Backup de la microSD iniciado en segundo plano -> {target}")
         if follow or sys.stdout.isatty():
             return _follow_backup(client)
         print("Consulta el progreso con: subeftp --backup-estado")
         return 0
     print("(La web no responde: el backup se hace en primer plano; Ctrl+C lo detiene.)")
-    return _print_backup_result(client.backup_foreground(dest, incremental, extra))
+    return _print_backup_result(client.backup_foreground(dest, incremental, extra, simulate))
+
+
+def _run_restore_cli(client: ToolboxClient, args: list[str]) -> int:
+    start = False
+    raw: list[str] = []
+    for a in args:
+        if a in ("-s", "--subir", "-i", "--iniciar", "--ahora"):
+            start = True
+        elif a.startswith("-"):
+            print(f"Opción no reconocida en --backup-restaurar: {a}", file=sys.stderr)
+            return 1
+        else:
+            raw.append(a)
+    if len(raw) != 1:
+        print("Uso: subeftp --backup-restaurar RUTA_DEL_BACKUP [-s]", file=sys.stderr)
+        return 1
+    res = client.backup_restore(str(Path(raw[0]).expanduser().resolve()), start=start)
+    _print_restore_result(res)
+    if res.get("added") and not res.get("started") and (
+        start or (sys.stdin.isatty() and _ask_yes_no("¿Iniciar la subida a la SD ahora?", True))
+    ):
+        client.start_queue("ftp")
+        res["started"] = True
+    if res.get("started"):
+        print("Subida a la SD iniciada en segundo plano (visible en Web y SSH).")
+    return 0 if res.get("added") else 1
 
 
 def _report_delete(res: dict[str, Any]) -> None:
@@ -1061,11 +1187,15 @@ Uso:
   subeftp --juego RUTA... [-d DEST] [-s]
                                       Encola juego(s) completo(s): Base -> Update -> DLC
   subeftp --espacio                   Consulta el espacio libre en la SD (si el servidor lo soporta)
-  subeftp --backup [-d CARPETA] [-n|--completo] [-x PATRON]... [-f]
-                                      Copia la microSD al servidor SIN las carpetas de juegos
-                                      (-n incremental en CARPETA/switch-sd, -f espera a que termine)
+  subeftp --backup [-d CARPETA] [-n|--completo] [-x PATRON]... [-f] [--simular]
+                                      Copia la microSD al servidor SIN juegos ni carpetas pesadas
+                                      (-n incremental en CARPETA/switch-sd, -f espera a que termine,
+                                      --simular solo calcula qué se copiaría y cuánto ocupa)
   subeftp --backup-estado | --backup-parar
                                       Progreso / detención del backup de la microSD
+  subeftp --backup-listar [CARPETA]   Backups guardados (carpetas y .tar.gz)
+  subeftp --backup-restaurar RUTA [-s]
+                                      Sube a la SD un backup (o una carpeta de él) por la cola FTP
   subeftp --listar [RUTA] [--orden nombre|fecha|tamano] [--desc]
                                       Lista una carpeta local con fecha de modificación
   subeftp --buscar TEXTO [RUTA]       Busca recursivamente en las carpetas locales
@@ -1365,6 +1495,8 @@ def _edit_settings_cli(client: ToolboxClient, kind: str) -> None:
             ("ftp_backup_dir", "Carpeta local de backups de la SD"),
             ("ftp_backup_exclude", "Carpetas excluidas del backup (comas; 'defecto' = restaurar)"),
             ("ftp_backup_exclude_ext", "Extensiones excluidas del backup (comas; 'defecto' = restaurar)"),
+            ("ftp_backup_keep", "Conservar los últimos N backups con fecha (0 = todos)"),
+            ("ftp_backup_compress", "Comprimir backups con fecha en .tar.gz (s/n)"),
         ]
     )
     for key, label in fields:
@@ -1374,6 +1506,8 @@ def _edit_settings_cli(client: ToolboxClient, kind: str) -> None:
         val = input(f"  {label} [{cur}]: ").strip()
         if val.lower() == "defecto" and key.startswith("ftp_backup_exclude"):
             patch[key] = cfg.get(f"{key}_default") or []
+        elif val != "" and key == "ftp_backup_compress":
+            patch[key] = val.lower() in ("s", "si", "sí", "y", "yes", "1", "true")
         elif val != "":
             patch[key] = int(val) if key.endswith(("kbps", "port")) and val.isdigit() else val
     if kind == "ftp":
@@ -1402,7 +1536,7 @@ def _interactive_menu(client: ToolboxClient, kind: str) -> int:
             print("  3) Ver solo pendientes            8) Editar configuración FTP")
             print("  4) Ver progreso en vivo           9) Ver registro (log)")
             print("  5) Iniciar / Detener subida       e) Espacio libre en la SD")
-            print("  b) Backup de la microSD (sin juegos)")
+            print("  b) Backup de la microSD: hacer, simular y restaurar")
             print("  i) Historial   t) Papelera        h) Ayuda   0) Salir")
         print("=" * 76)
 
@@ -1476,10 +1610,35 @@ def _interactive_backup(client: ToolboxClient) -> None:
             _follow_backup(client)
         return
     cfg = client.get_settings()
-    print("\n=== Backup de la microSD (sin carpetas de juegos) ===")
+    print("\n=== Backup de la microSD (sin juegos ni carpetas pesadas) ===")
     print(f"  Carpeta remota (raíz de la SD): {cfg.get('ftp_backup_remote_root') or '/'}")
     print(f"  Excluye carpetas: {', '.join(cfg.get('ftp_backup_exclude') or []) or '(ninguna)'}")
     print(f"  Excluye ficheros: {', '.join('.' + e for e in cfg.get('ftp_backup_exclude_ext') or []) or '(ninguno)'}")
+    keep = int(cfg.get("ftp_backup_keep") or 0)
+    print(f"  Conservar: {'todos' if not keep else f'los últimos {keep}'} · Comprimir: {'sí' if cfg.get('ftp_backup_compress') else 'no'}")
+    print("  1) Hacer backup   2) Simular (qué se copiaría)   3) Backups guardados / restaurar   0) Volver")
+    op = input("  Opción: ").strip().lower()
+    if op == "3":
+        items = _print_backup_list(client.backup_list())
+        if not items:
+            return
+        sel = input("  Nº del backup a restaurar en la SD (Enter = ninguno): ").strip()
+        idx = _parse_selection(sel, len(items))
+        if not idx:
+            return
+        b = items[idx[0] - 1]
+        print(f"  Se subirá {b['name']} a la SD por la cola FTP (los ficheros con otro tamaño se sobrescriben).")
+        if not _ask_yes_no("  ¿Continuar?", False):
+            return
+        res = client.backup_restore(b["path"])
+        _print_restore_result(res)
+        if res.get("added") and _ask_yes_no("  ¿Iniciar la subida ahora?", True):
+            client.start_queue("ftp")
+            print("  Subida iniciada en segundo plano.")
+        return
+    if op not in ("1", "2"):
+        return
+    simulate = op == "2"
     base = cfg.get("ftp_backup_dir") or ""
     val = input(f"  Carpeta local de backups [{base or 'sin configurar'}]: ").strip()
     dest = str(Path(val).expanduser().resolve()) if val else base
@@ -1488,16 +1647,18 @@ def _interactive_backup(client: ToolboxClient) -> None:
         return
     if val and _ask_yes_no("  ¿Guardar esa carpeta como carpeta de backups por defecto?", True):
         client.update_settings({"ftp_backup_dir": dest})
-    incremental = _ask_yes_no(
-        "  ¿Incremental? (S = actualizar switch-sd/ y copiar solo lo cambiado · N = carpeta nueva con fecha)",
-        bool(cfg.get("ftp_backup_incremental")),
-    )
+    incremental = None
+    if not simulate:
+        incremental = _ask_yes_no(
+            "  ¿Incremental? (S = actualizar switch-sd/ y copiar solo lo cambiado · N = carpeta nueva con fecha)",
+            bool(cfg.get("ftp_backup_incremental")),
+        )
     if client.is_web_running():
-        client.backup_start(dest, incremental)
-        print("  Backup iniciado en segundo plano (visible en la web). Ctrl+C deja de mirar.")
+        client.backup_start(dest, incremental, simulate=simulate)
+        print("  En marcha en segundo plano (visible en la web). Ctrl+C deja de mirar.")
         _follow_backup(client)
     else:
-        _print_backup_result(client.backup_foreground(dest, incremental))
+        _print_backup_result(client.backup_foreground(dest, incremental, simulate=simulate))
 
 
 def _interactive_trash(client: ToolboxClient) -> None:
@@ -1738,6 +1899,12 @@ def run_cli(argv: list[str], client: ToolboxClient | None = None) -> int:
         return _run_backup_cli(cli, args[1:])
     if kind == "ftp" and first == "--backup-estado":
         return _print_backup_status(cli)
+    if kind == "ftp" and first == "--backup-listar":
+        data = cli.backup_list(args[1] if len(args) > 1 else "")
+        _print_backup_list(data)
+        return 0 if data.get("path") else 1
+    if kind == "ftp" and first == "--backup-restaurar":
+        return _run_restore_cli(cli, args[1:])
     if kind == "ftp" and first == "--backup-parar":
         res = cli.backup_stop()
         print("Detención del backup solicitada." if res.get("stopped") else "No hay ningún backup en marcha.")

@@ -15,6 +15,8 @@ import ftplib
 import os
 import posixpath
 import re
+import shutil
+import tarfile
 import threading
 import time
 from datetime import datetime
@@ -23,6 +25,10 @@ from typing import Any, Callable
 from .config import DEFAULT_BACKUP_EXCLUDE, DEFAULT_BACKUP_EXCLUDE_EXT, normalize_remote_path, parse_extensions, parse_patterns, resolve_safe_path
 
 BACKUP_PREFIX = "switch-sd"
+# Backups con fecha (carpeta o .tar.gz): los únicos que se borran al aplicar «conservar los últimos N»
+DATED_BACKUP_RE = re.compile(rf"^{BACKUP_PREFIX}-\d{{8}}-\d{{6}}(\.tar\.gz)?$")
+BACKUP_NAME_RE = re.compile(rf"^{BACKUP_PREFIX}(-\d{{8}}-\d{{6}})?(\.tar\.gz)?$")
+TAR_SUFFIX = ".tar.gz"
 _PART_SUFFIX = ".part"
 _MLSD_MODIFY_RE = re.compile(r"^(\d{14})")
 
@@ -179,8 +185,12 @@ def scan_remote_tree(
     exclude_ext: list[str],
     stop_event: threading.Event | None = None,
     on_dir: Callable[[str, int, int], None] | None = None,
+    measure_excluded: bool = False,
 ) -> dict[str, Any]:
-    """Recorre el árbol remoto y devuelve los ficheros a copiar y lo excluido."""
+    """Recorre el árbol remoto y devuelve los ficheros a copiar y lo excluido.
+
+    Con `measure_excluded` también recorre las carpetas excluidas para saber cuánto ocupan
+    (lo usa la simulación; en un backup normal no se entra en ellas)."""
     root = normalize_remote_path(root)
     files: list[dict[str, Any]] = []
     excluded_dirs: list[str] = []
@@ -189,6 +199,7 @@ def scan_remote_tree(
     unknown_sizes: list[str] = []
     errors: list[str] = []
     state: dict[str, Any] = {}
+    excluded_detail: list[dict[str, Any]] = []
     pending = [""]
     while pending:
         if stop_event is not None and stop_event.is_set():
@@ -206,6 +217,10 @@ def scan_remote_tree(
             if e["is_dir"]:
                 if is_excluded_dir(rel, exclude_dirs):
                     excluded_dirs.append("/" + rel)
+                    if measure_excluded:
+                        excluded_detail.append(
+                            {"path": "/" + rel, **_measure_remote_dir(ftp, posixpath.join(root, rel), state, stop_event)}
+                        )
                 else:
                     subdirs.append(rel)
                 continue
@@ -232,9 +247,45 @@ def scan_remote_tree(
         "excluded_dirs": excluded_dirs,
         "excluded_files": excluded_files,
         "excluded_bytes": excluded_bytes,
+        "excluded_detail": excluded_detail,
         "errors": errors,
         "mlsd": bool(state.get("mlsd")),
     }
+
+
+def _measure_remote_dir(
+    ftp: ftplib.FTP, remote_dir: str, state: dict[str, Any], stop_event: threading.Event | None
+) -> dict[str, Any]:
+    """Ficheros y bytes de una carpeta remota (recursivo). Los errores de listado se ignoran."""
+    files = 0
+    total = 0
+    pending = [remote_dir]
+    while pending:
+        if stop_event is not None and stop_event.is_set():
+            raise BackupStopped()
+        cur = pending.pop()
+        try:
+            entries = list_remote(ftp, cur, state)
+        except ftplib.error_perm:
+            continue
+        for e in entries:
+            if e["is_dir"]:
+                pending.append(posixpath.join(cur, e["name"]))
+            else:
+                files += 1
+                total += int(e["size"] or 0)
+    return {"files": files, "bytes": total}
+
+
+def summarize_top_dirs(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Agrupa los ficheros a copiar por carpeta de primer nivel (mayor primero)."""
+    groups: dict[str, dict[str, Any]] = {}
+    for f in files:
+        top = f["rel"].split("/", 1)[0] if "/" in f["rel"] else "(raíz)"
+        g = groups.setdefault(top, {"path": "/" + top if top != "(raíz)" else "/", "files": 0, "bytes": 0})
+        g["files"] += 1
+        g["bytes"] += int(f["size"] or 0)
+    return sorted(groups.values(), key=lambda g: (-g["bytes"], g["path"].lower()))
 
 
 def backup_target_dir(base_dir: str, incremental: bool, now: datetime | None = None) -> str:
@@ -269,8 +320,10 @@ class BackupRun:
         stop_event: threading.Event | None = None,
         log_cb: LogCallback | None = None,
         progress_cb: Callable[[dict[str, Any]], None] | None = None,
+        simulate: bool = False,
     ) -> None:
         self.settings = settings
+        self.simulate = bool(simulate)
         self.data_root = data_root
         base = (dest_dir or settings.get("ftp_backup_dir") or "").strip()
         if not base:
@@ -284,6 +337,8 @@ class BackupRun:
         self.exclude_dirs = parse_patterns(settings.get("ftp_backup_exclude", DEFAULT_BACKUP_EXCLUDE))
         self.exclude_dirs += [p for p in parse_patterns(extra_exclude or []) if p not in self.exclude_dirs]
         self.exclude_ext = parse_extensions(settings.get("ftp_backup_exclude_ext", DEFAULT_BACKUP_EXCLUDE_EXT))
+        self.compress = bool(settings.get("ftp_backup_compress")) and not self.incremental
+        self.keep = max(0, int(settings.get("ftp_backup_keep") or 0))
         self.retries = max(0, int(settings.get("ftp_retries", 3)))
         self.retry_wait = max(1, int(settings.get("ftp_retry_wait", 10)))
         self.stop_event = stop_event or threading.Event()
@@ -295,6 +350,7 @@ class BackupRun:
         self.source_label = f"microSD Switch ({host}:{int(settings.get('ftp_port') or 5000)})"
         self.progress: dict[str, Any] = {
             "phase": "scanning",
+            "simulate": self.simulate,
             "target": self.target,
             "incremental": self.incremental,
             "remote_root": self.remote_root,
@@ -314,6 +370,7 @@ class BackupRun:
             "excluded_files": 0,
             "excluded_bytes": 0,
             "errors": [],
+            "pruned": [],
             "started_at": time.time(),
         }
         self._ftp: ftplib.FTP | None = None
@@ -349,7 +406,10 @@ class BackupRun:
 
         self._emit(force=True)
         ftp = self._ensure_ftp()
-        res = scan_remote_tree(ftp, self.remote_root, self.exclude_dirs, self.exclude_ext, self.stop_event, on_dir)
+        res = scan_remote_tree(
+            ftp, self.remote_root, self.exclude_dirs, self.exclude_ext, self.stop_event, on_dir,
+            measure_excluded=self.simulate,
+        )
         self.progress.update(
             {
                 "files_total": len(res["files"]),
@@ -439,15 +499,72 @@ class BackupRun:
                     self._check_stop()
                     time.sleep(0.3)
 
+    def _compress(self) -> None:
+        """Empaqueta la carpeta del backup en un .tar.gz y borra la carpeta."""
+        self.progress.update({"phase": "compressing", "current": os.path.basename(self.target) + TAR_SUFFIX})
+        self._emit(force=True)
+        tar_path = self.target + TAR_SUFFIX
+        part = tar_path + _PART_SUFFIX
+        try:
+            with tarfile.open(part, "w:gz", compresslevel=6) as tar:
+                for dirpath, dirnames, filenames in os.walk(self.target):
+                    dirnames.sort()
+                    for name in sorted(filenames):
+                        self._check_stop()
+                        full = os.path.join(dirpath, name)
+                        self.progress["current"] = os.path.relpath(full, self.target)
+                        self._emit()
+                        tar.add(full, arcname=os.path.relpath(full, self.target), recursive=False)
+            os.replace(part, tar_path)
+        except BaseException:
+            try:
+                os.unlink(part)
+            except OSError:
+                pass
+            raise
+        shutil.rmtree(self.target, ignore_errors=True)
+        self.target = tar_path
+        self.progress["target"] = tar_path
+        self.log_cb("ftp", "INFO", f"Backup comprimido en {tar_path} ({_fmt(os.path.getsize(tar_path))})")
+
+    def _prune(self) -> None:
+        """Conserva solo los `keep` backups con fecha más recientes (carpetas o .tar.gz)."""
+        try:
+            names = sorted((n for n in os.listdir(self.base_dir) if DATED_BACKUP_RE.match(n)), reverse=True)
+        except OSError:
+            return
+        for name in names[self.keep:]:
+            full = os.path.join(self.base_dir, name)
+            try:
+                if os.path.isdir(full) and not os.path.islink(full):
+                    shutil.rmtree(full)
+                else:
+                    os.unlink(full)
+            except OSError as exc:
+                self.log_cb("ftp", "WARN", f"No se pudo borrar el backup antiguo {full}: {exc}")
+                continue
+            self.progress["pruned"].append(name)
+        if self.progress["pruned"]:
+            self.log_cb(
+                "ftp", "INFO", f"Backups antiguos borrados (se conservan {self.keep}): {', '.join(self.progress['pruned'])}"
+            )
+
     def run(self) -> dict[str, Any]:
         """Ejecuta el backup completo. Devuelve el resumen final (status OK / ERR / STOP)."""
         status = "OK"
         error = ""
         try:
-            self.log_cb("ftp", "INFO", f"Backup de la microSD iniciado -> {self.target}")
+            if self.simulate:
+                self.log_cb("ftp", "INFO", "Simulación del backup de la microSD iniciada")
+            else:
+                self.log_cb("ftp", "INFO", f"Backup de la microSD iniciado -> {self.target}")
             res = self.scan()
             self._check_stop()
             files = res["files"]
+            if self.simulate:
+                self.progress["top_dirs"] = summarize_top_dirs(files)
+                self.progress["excluded_detail"] = res["excluded_detail"]
+                return self._finish("SIM", "")
             needed = self.progress["bytes_total"]
             os.makedirs(self.base_dir, exist_ok=True)
             st = os.statvfs(self.base_dir)
@@ -480,6 +597,11 @@ class BackupRun:
             if self.progress["files_failed"]:
                 status = "ERR"
                 error = f"{self.progress['files_failed']} fichero(s) con error"
+            else:
+                if self.compress:
+                    self._compress()
+                if self.keep:
+                    self._prune()
         except BackupStopped:
             status = "STOP"
             error = "detenido por el usuario"
@@ -488,12 +610,23 @@ class BackupRun:
             error = str(exc)
         except (OSError, EOFError, ftplib.Error) as exc:
             status = "ERR"
-            error = f"Error FTP: {exc}"
+            error = f"Error FTP: {exc}" if isinstance(exc, (EOFError, ftplib.Error)) else f"Error: {exc}"
         finally:
             self._drop_ftp()
+        return self._finish(status, error)
+
+    def _finish(self, status: str, error: str) -> dict[str, Any]:
+        self._drop_ftp()
         p = self.progress
         p.update({"phase": "done", "status": status, "error": error, "finished_at": time.time(), "current": ""})
-        if status == "OK":
+        if status == "SIM":
+            self.log_cb(
+                "ftp",
+                "INFO",
+                f"Simulación del backup: se copiarían {p['files_total']} fichero(s), {_fmt(p['bytes_total'])}"
+                f" (excluidas {len(p['excluded_dirs'])} carpeta(s))",
+            )
+        elif status == "OK":
             self.log_cb(
                 "ftp",
                 "INFO",
@@ -534,7 +667,13 @@ class BackupJob:
         with self._lock:
             return self._thread is not None and self._thread.is_alive()
 
-    def start(self, dest_dir: str | None = None, incremental: bool | None = None, extra_exclude: list[str] | None = None) -> dict[str, Any]:
+    def start(
+        self,
+        dest_dir: str | None = None,
+        incremental: bool | None = None,
+        extra_exclude: list[str] | None = None,
+        simulate: bool = False,
+    ) -> dict[str, Any]:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 raise BackupError("Ya hay un backup en marcha")
@@ -548,6 +687,7 @@ class BackupJob:
                 stop_event=self._stop_event,
                 log_cb=self.db.add_log,
                 progress_cb=self._set_progress,
+                simulate=simulate,
             )
             self._progress = dict(run.progress)
             self._thread = threading.Thread(target=self._run, args=(run,), name="switch-backup", daemon=True)
@@ -615,3 +755,132 @@ def record_history(db: Any, run: BackupRun, result: dict[str, Any]) -> None:
         )
     except Exception as exc:  # pragma: no cover
         db.add_log("ftp", "WARN", f"No se pudo registrar el backup en el historial: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Backups guardados y restauración
+# ---------------------------------------------------------------------------
+def _dir_size(path: str) -> tuple[int, int]:
+    files = 0
+    total = 0
+    for dirpath, _dirs, filenames in os.walk(path):
+        for name in filenames:
+            if name.endswith(_PART_SUFFIX):
+                continue
+            try:
+                total += os.path.getsize(os.path.join(dirpath, name))
+                files += 1
+            except OSError:
+                pass
+    return files, total
+
+
+def list_backups(base_dir: str) -> list[dict[str, Any]]:
+    """Backups de `base_dir` (carpetas `switch-sd*` y `.tar.gz`), del más reciente al más antiguo."""
+    out: list[dict[str, Any]] = []
+    try:
+        names = os.listdir(base_dir)
+    except OSError:
+        return out
+    for name in names:
+        if not BACKUP_NAME_RE.match(name):
+            continue
+        full = os.path.join(base_dir, name)
+        try:
+            st = os.stat(full)
+        except OSError:
+            continue
+        if name.endswith(TAR_SUFFIX):
+            if not os.path.isfile(full):
+                continue
+            item = {"name": name, "path": full, "kind": "tar", "size": st.st_size, "files": None}
+        else:
+            if not os.path.isdir(full):
+                continue
+            files, size = _dir_size(full)
+            item = {"name": name, "path": full, "kind": "dir", "size": size, "files": files}
+        item["mtime"] = st.st_mtime
+        item["incremental"] = name.startswith(BACKUP_PREFIX) and name.removesuffix(TAR_SUFFIX) == BACKUP_PREFIX
+        out.append(item)
+    out.sort(key=lambda b: b["mtime"], reverse=True)
+    return out
+
+
+def _backup_root(path: str) -> str | None:
+    """Carpeta `switch-sd*` que contiene `path` (o el propio `path`)."""
+    cur = os.path.normpath(path)
+    while True:
+        if BACKUP_NAME_RE.match(os.path.basename(cur)) and os.path.isdir(cur):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
+
+
+def extract_backup(tar_path: str) -> str:
+    """Descomprime un backup .tar.gz junto a él (si no estaba ya) y devuelve la carpeta."""
+    folder = tar_path[: -len(TAR_SUFFIX)]
+    if os.path.isdir(folder):
+        return folder
+    tmp = folder + ".extrayendo"
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp)
+    try:
+        with tarfile.open(tar_path, "r:gz") as tar:
+            tar.extractall(tmp, filter="data")  # sin rutas absolutas, '..' ni enlaces peligrosos
+        os.replace(tmp, folder)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    return folder
+
+
+def plan_restore(path: str, data_root: str, remote_root: str) -> dict[str, Any]:
+    """Prepara la subida a la SD de un backup (o de una carpeta o fichero dentro de él).
+
+    Devuelve {root, entries} con los elementos para la cola FTP: cada fichero va a
+    `remote_root/<ruta dentro del backup>`, es decir, a su sitio original en la SD.
+    """
+    from .mover_worker import file_signature  # import diferido: evita ciclos al cargar la app
+
+    try:
+        safe = resolve_safe_path(path, data_root)
+    except ValueError as exc:
+        raise BackupError(str(exc)) from exc
+    if safe.endswith(TAR_SUFFIX) and os.path.isfile(safe):
+        safe = extract_backup(safe)
+    root = _backup_root(safe)
+    if root is None:
+        raise BackupError("La ruta no es un backup de la microSD (carpeta switch-sd… o .tar.gz)")
+    if os.path.isfile(safe):
+        candidates = [safe]
+    elif os.path.isdir(safe):
+        candidates = []
+        for dirpath, dirnames, filenames in os.walk(safe):
+            dirnames.sort()
+            candidates.extend(os.path.join(dirpath, n) for n in sorted(filenames) if not n.endswith(_PART_SUFFIX))
+    else:
+        raise BackupError(f"No existe: {safe}")
+    remote_root = normalize_remote_path(remote_root or "/")
+    entries: list[dict[str, Any]] = []
+    for full in candidates:
+        rel = os.path.relpath(full, root).replace(os.sep, "/")
+        try:
+            size = os.path.getsize(full)
+            sig = file_signature(full)
+        except OSError:
+            continue
+        entries.append(
+            {
+                "kind": "ftp",
+                "operation": "subir",
+                "source_path": full,
+                "dest_path": normalize_remote_path(f"{remote_root}/{rel}"),
+                "size_bytes": size,
+                "source_sig": sig,
+                "cleanup_dir": "",
+                "switch_type": "",
+            }
+        )
+    return {"root": root, "entries": entries}

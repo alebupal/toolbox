@@ -2492,6 +2492,9 @@ async function loadSettings() {
     $("cfgBackupExclude").value = (s.ftp_backup_exclude || []).join("\n");
     $("cfgBackupExcludeExt").value = (s.ftp_backup_exclude_ext || []).join(", ");
     $("cfgBackupIncremental").checked = !!s.ftp_backup_incremental;
+    $("cfgBackupCompress").checked = !!s.ftp_backup_compress;
+    $("cfgBackupKeep").value = s.ftp_backup_keep ?? 0;
+    loadBackupList();
     const hasTrash = Object.prototype.hasOwnProperty.call(s, "trash_days");
     $("cfgTrashDaysWrap").classList.toggle("hidden", !hasTrash);
     if (hasTrash) $("cfgTrashDays").value = s.trash_days;
@@ -2542,6 +2545,8 @@ function collectSettings() {
       ftp_backup_exclude: $("cfgBackupExclude").value,
       ftp_backup_exclude_ext: $("cfgBackupExcludeExt").value,
       ftp_backup_incremental: $("cfgBackupIncremental").checked,
+      ftp_backup_compress: $("cfgBackupCompress").checked,
+      ftp_backup_keep: Number($("cfgBackupKeep").value || 0),
     });
   }
   if (!$("cfgTrashDaysWrap").classList.contains("hidden")) payload.trash_days = Number($("cfgTrashDays").value || 7);
@@ -2631,6 +2636,7 @@ function renderBackup(b) {
   state.backup = b;
   const running = !!b.running;
   $("btnBackupStart").classList.toggle("hidden", running);
+  $("btnBackupSimulate").classList.toggle("hidden", running);
   $("btnBackupStop").classList.toggle("hidden", !running);
   $("btnBackupStop").disabled = !!b.stopping;
   const box = $("backupStatus");
@@ -2644,11 +2650,24 @@ function renderBackup(b) {
   const done = Number(p.bytes_done || 0);
   let text;
   let extra = "";
-  if (running && p.phase === "scanning") {
-    text = b.stopping ? "Deteniendo…" : "Analizando la SD…";
+  const sim = p.simulate || p.status === "SIM";
+  $("backupSim").classList.toggle("hidden", !(!running && p.status === "SIM"));
+  if (!running && p.status === "SIM") {
+    text = "🔍 Simulación: esto es lo que se copiaría";
+    extra = `${p.files_total || 0} fichero(s) · ${fmtBytes(total)}`;
+    $("backupProgBar").classList.add("hidden");
+    renderBackupSim(p);
+  } else if (running && p.phase === "compressing") {
+    text = b.stopping ? "Deteniendo…" : "Comprimiendo…";
+    $("backupProgBar").classList.remove("hidden");
+    setProgressBar($("backupProgBar"), $("backupProgFill"), 0, true);
+  } else if (running && p.phase === "scanning") {
+    $("backupProgBar").classList.remove("hidden");
+    text = b.stopping ? "Deteniendo…" : (sim ? "Simulando: analizando la SD…" : "Analizando la SD…");
     extra = `${p.files_total || 0} fichero(s) · ${fmtBytes(total)}`;
     setProgressBar($("backupProgBar"), $("backupProgFill"), 0, true);
   } else {
+    $("backupProgBar").classList.remove("hidden");
     const pct = total ? (done * 100) / total : (p.phase === "done" ? 100 : 0);
     if (running) text = b.stopping ? "Deteniendo…" : `Copiando ${pct.toFixed(1)} %`;
     else text = { OK: "✓ Último backup completado", ERR: "⚠ Último backup con errores", STOP: "⏹ Último backup detenido" }[p.status] || "Último backup";
@@ -2660,21 +2679,37 @@ function renderBackup(b) {
   $("backupStatusExtra").textContent = extra;
   const lines = [];
   if (running && p.current) lines.push(p.current);
-  if (p.target) lines.push(`→ ${p.target}`);
-  if (!running) {
+  if (p.target && !sim) lines.push(`→ ${p.target}`);
+  if (!running && !sim) {
     const exc = p.excluded_dirs || [];
     if (exc.length) lines.push(`Excluidas: ${exc.slice(0, 6).join(", ")}${exc.length > 6 ? "…" : ""}`);
     if (p.files_skipped) lines.push(`Sin cambios: ${p.files_skipped} fichero(s)`);
-    if (p.error) lines.push(`Motivo: ${p.error}`);
+    if (p.pruned && p.pruned.length) lines.push(`Backups antiguos borrados: ${p.pruned.join(", ")}`);
   }
-  $("backupCurrent").textContent = lines.join("\n");
+  if (!running && p.error) lines.push(`Motivo: ${p.error}`);
+  $("backupCurrent").textContent = [...new Set(lines)].join("\n");
   if (prev && prev.running && !running && b.last) {
     const st = b.last.status;
+    if (st !== "SIM") loadBackupList();
+    if (st === "SIM") return;
     showToast(st === "OK" ? "Backup de la microSD completado" : (st === "STOP" ? "Backup de la microSD detenido" : `Backup con errores: ${b.last.error || ""}`), { type: st === "ERR" ? "err" : undefined });
   }
 }
 
-$("btnBackupStart").onclick = async () => {
+function renderBackupSim(p) {
+  const rows = (list) => list.map((g) => `<tr><td>${escapeHtml(g.path)}</td><td class="num">${g.files}</td><td class="num">${fmtBytes(g.bytes)}</td></tr>`).join("");
+  const tops = p.top_dirs || [];
+  const excl = [...(p.excluded_detail || [])].sort((a, b) => b.bytes - a.bytes);
+  const exclTotal = excl.reduce((acc, e) => acc + Number(e.bytes || 0), 0) + Number(p.excluded_bytes || 0);
+  let html = `<div><h4>Se copia · ${fmtBytes(p.bytes_total || 0)}</h4><table>${rows(tops) || '<tr><td colspan="3">Nada</td></tr>'}</table></div>`;
+  html += `<div><h4>Se excluye · ${fmtBytes(exclTotal)}</h4><table>${rows(excl)}`;
+  if (p.excluded_files) html += `<tr><td>Ficheros de juego sueltos</td><td class="num">${p.excluded_files}</td><td class="num">${fmtBytes(p.excluded_bytes || 0)}</td></tr>`;
+  if (!excl.length && !p.excluded_files) html += `<tr><td colspan="3">Nada</td></tr>`;
+  html += `</table></div>`;
+  $("backupSim").innerHTML = html;
+}
+
+async function launchBackup(simulate) {
   autoSave.cancel();
   if (!(await saveSettings())) return;
   if (!$("cfgBackupDir").value.trim()) {
@@ -2683,13 +2718,67 @@ $("btnBackupStart").onclick = async () => {
     return;
   }
   try {
-    const res = await api("/api/ftp/backup/start", { method: "POST", body: JSON.stringify({}) });
+    const res = await api("/api/ftp/backup/start", { method: "POST", body: JSON.stringify({ simulate }) });
     renderBackup(res);
-    showToast("Backup de la microSD iniciado");
+    showToast(simulate ? "Simulando el backup (no se descarga nada)…" : "Backup de la microSD iniciado");
   } catch (err) {
     showToast(err.message, { type: "err" });
   }
-};
+}
+
+$("btnBackupStart").onclick = () => launchBackup(false);
+$("btnBackupSimulate").onclick = () => launchBackup(true);
+
+async function loadBackupList() {
+  const ul = $("backupList");
+  try {
+    const data = await api("/api/ftp/backup/list");
+    if (!data.path) {
+      ul.innerHTML = `<li class="muted">Configura la carpeta de backups para verlos aquí.</li>`;
+      return;
+    }
+    if (!data.items.length) {
+      ul.innerHTML = `<li class="muted">Aún no hay backups en ${escapeHtml(data.path)}.</li>`;
+      return;
+    }
+    ul.innerHTML = data.items.map((b) => {
+      const kind = b.kind === "tar" ? "tar.gz" : (b.incremental ? "incremental" : "carpeta");
+      const files = b.files != null ? ` · ${b.files} fichero(s)` : "";
+      return `<li><div class="bk-info"><span class="bk-name">${escapeHtml(b.name)}</span>
+        <span class="muted">${escapeHtml(fmtDate(b.mtime))} · ${fmtBytes(b.size)}${files} · ${kind}</span></div>
+        <button type="button" class="btn btn-sm" data-restore="${escapeHtml(b.path)}" data-name="${escapeHtml(b.name)}">↩ Restaurar</button></li>`;
+    }).join("");
+  } catch (err) {
+    if (isMissing(err)) $("backupList").closest(".card").querySelector(".backup-list-head").classList.add("hidden");
+    else ul.innerHTML = `<li class="muted">${escapeHtml(err.message)}</li>`;
+  }
+}
+
+$("btnBackupListRefresh").onclick = () => loadBackupList();
+$("backupList").addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-restore]");
+  if (!btn) return;
+  const tar = btn.dataset.restore.endsWith(".tar.gz");
+  const ok = await uiConfirm({
+    title: "Restaurar en la microSD",
+    html: `<p>Se subirá <strong>${escapeHtml(btn.dataset.name)}</strong> a la SD de la Switch por la <strong>cola FTP</strong>, cada fichero a su sitio original.</p>
+      <p>Los ficheros que ya estén en la SD con el mismo tamaño se omiten; los demás se sobrescriben.${tar ? " Antes se descomprime el .tar.gz junto al original." : ""}</p>
+      <p class="muted">Usa DBI en modo «explorar SD» (o ftpd) y no dejes la consola en un juego mientras se sube.</p>`,
+    okText: "Restaurar y subir",
+  });
+  if (!ok) return;
+  btn.disabled = true;
+  try {
+    const res = await api("/api/ftp/backup/restore", { method: "POST", body: JSON.stringify({ path: btn.dataset.restore, start: true }) });
+    showToast(res.added ? `Subiendo ${res.added} archivo(s) a la SD (${fmtBytes(res.bytes)}). Míralo en Colas → FTP` : "No había nada nuevo que subir (ya estaba en la cola)");
+    if (tar) loadBackupList();
+    refreshStatus();
+  } catch (err) {
+    showToast(err.message, { type: "err" });
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 $("btnBackupExcludeDefaults").onclick = async () => {
   const s = state.settings || {};

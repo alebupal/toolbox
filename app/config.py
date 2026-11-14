@@ -57,6 +57,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "ftp_backup_dir": "",
     "ftp_backup_remote_root": "/",
     "ftp_backup_incremental": False,
+    "ftp_backup_compress": False,  # .tar.gz (solo backups con fecha)
+    "ftp_backup_keep": 0,  # conservar los últimos N backups con fecha (0 = todos)
     "ftp_backup_exclude": list(DEFAULT_BACKUP_EXCLUDE),
     "ftp_backup_exclude_ext": list(DEFAULT_BACKUP_EXCLUDE_EXT),
     # Papelera del explorador: días que se conservan los elementos borrados (0 = borrado directo)
@@ -204,6 +206,7 @@ def sanitize_settings(raw: dict[str, Any], data_root: str | None = None) -> dict
         "ftp_passive",
         "ftp_verify_size",
         "ftp_backup_incremental",
+        "ftp_backup_compress",
     ):
         merged[bool_key] = bool(merged.get(bool_key))
 
@@ -226,6 +229,10 @@ def sanitize_settings(raw: dict[str, Any], data_root: str | None = None) -> dict
         merged["ftp_backup_dir"] = resolve_safe_path(backup_dir, root) if backup_dir else ""
     except ValueError:
         merged["ftp_backup_dir"] = ""
+    try:
+        merged["ftp_backup_keep"] = max(0, min(int(merged.get("ftp_backup_keep") or 0), 999))
+    except (TypeError, ValueError):
+        merged["ftp_backup_keep"] = 0
     merged["ftp_backup_remote_root"] = normalize_remote_path(str(merged.get("ftp_backup_remote_root") or "/"))
     merged["ftp_backup_exclude"] = parse_patterns(merged.get("ftp_backup_exclude"))
     merged["ftp_backup_exclude_ext"] = parse_extensions(merged.get("ftp_backup_exclude_ext"))

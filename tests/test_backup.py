@@ -175,6 +175,53 @@ class BackupFtpTests(unittest.TestCase):
         res2 = self._run(incremental=True)
         self.assertEqual(res2["files_skipped"], 3)
 
+    def test_simulation_measures_without_downloading(self) -> None:
+        res = self._run(simulate=True)
+        self.assertEqual(res["status"], "SIM", res.get("error"))
+        self.assertFalse(os.path.exists(os.path.join(self.data_root, "bk")))
+        self.assertEqual(res["bytes_total"], 2150)
+        tops = {g["path"]: g["bytes"] for g in res["top_dirs"]}
+        self.assertEqual(tops, {"/JKSV": 2000, "/atmosphere": 100, "/switch": 50})
+        excl = {e["path"]: e["bytes"] for e in res["excluded_detail"]}
+        self.assertEqual(excl["/Nintendo/Contents"], 5000)
+        self.assertEqual(excl["/emuMMC"], 1400)
+        self.assertEqual(excl["/backup"], 800)
+        self.assertEqual(excl["/Nintendo/Album"], 300)
+
+    def test_compress_keep_and_restore(self) -> None:
+        from app.switch_backup import list_backups, plan_restore
+
+        base = os.path.join(self.data_root, "bk")
+        os.makedirs(base)
+        for old in ("switch-sd-20200101-000000", "switch-sd-20210101-000000.tar.gz", "otra-cosa"):
+            full = os.path.join(base, old)
+            if old.endswith(".tar.gz"):
+                open(full, "wb").close()
+            else:
+                os.makedirs(full)
+        self.settings = dict(self.settings, ftp_backup_compress=True, ftp_backup_keep=2)
+        res = self._run()
+        self.assertEqual(res["status"], "OK", res.get("error"))
+        self.assertTrue(res["target"].endswith(".tar.gz"))
+        self.assertFalse(os.path.isdir(res["target"][: -len(".tar.gz")]))
+        self.assertEqual(res["pruned"], ["switch-sd-20200101-000000"])
+        names = sorted(os.listdir(base))
+        self.assertIn("otra-cosa", names)  # lo que no es un backup no se toca
+        self.assertIn("switch-sd-20210101-000000.tar.gz", names)
+
+        items = list_backups(base)
+        self.assertEqual(items[0]["path"], res["target"])
+        plan = plan_restore(res["target"], self.data_root, "/")
+        dests = sorted(e["dest_path"] for e in plan["entries"])
+        self.assertEqual(dests, ["/JKSV/Zelda/save.bin", "/atmosphere/config/system_settings.ini", "/switch/hbmenu.nro"])
+        # Restaurar solo una subcarpeta del backup
+        sub = os.path.join(plan["root"], "JKSV")
+        self.assertEqual([e["dest_path"] for e in plan_restore(sub, self.data_root, "/")["entries"]], ["/JKSV/Zelda/save.bin"])
+        from app.switch_backup import BackupError
+
+        with self.assertRaises(BackupError):
+            plan_restore(os.path.join(base, "otra-cosa"), self.data_root, "/")
+
     def test_stop_and_missing_dest(self) -> None:
         stop = threading.Event()
         stop.set()

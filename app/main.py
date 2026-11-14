@@ -24,6 +24,7 @@ from .ftp_worker import list_remote_dirs, test_ftp_connection
 from .models import (
     AddGameRequest,
     AddQueueRequest,
+    BackupRestoreRequest,
     BackupStartRequest,
     ChangeDestRequest,
     DeletePathsRequest,
@@ -37,7 +38,7 @@ from .models import (
 from .mover_worker import calculate_dir_size, file_signature, rename_entry
 from .services import VIRTUAL_ROOT_DIRS, decorate_queue_items, plan_game_upload, search_files
 from .services import list_directory as list_directory_entries
-from .switch_backup import BackupError, BackupJob
+from .switch_backup import BackupError, BackupJob, list_backups, plan_restore
 from .switch_utils import SWITCH_EXTENSIONS, detect_switch_type, scan_switch_ftp, switch_sort_key
 from .trash import TrashError, TrashManager
 from .worker_manager import WorkerManager
@@ -648,9 +649,46 @@ def api_backup_start(req: BackupStartRequest | None = None) -> dict[str, Any]:
             dest_dir=req.dest_dir if (req.dest_dir and req.dest_dir.strip()) else None,
             incremental=req.incremental,
             extra_exclude=req.extra_exclude,
+            simulate=req.simulate,
         )
     except BackupError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/ftp/backup/list")
+def api_backup_list(path: str | None = None) -> dict[str, Any]:
+    base = path if (path and path.strip()) else settings_store.get().get("ftp_backup_dir", "")
+    if not base:
+        return {"path": "", "items": []}
+    try:
+        safe = resolve_safe_path(base, get_data_root())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"path": safe, "items": list_backups(safe)}
+
+
+@app.post("/api/ftp/backup/restore")
+def api_backup_restore(req: BackupRestoreRequest) -> dict[str, Any]:
+    if backup_job.is_running():
+        raise HTTPException(status_code=409, detail="Hay un backup de la microSD en marcha; espera a que termine")
+    cfg = settings_store.get()
+    try:
+        plan = plan_restore(req.path, get_data_root(), cfg.get("ftp_backup_remote_root") or "/")
+    except BackupError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"No se pudo preparar la restauración: {exc}") from exc
+    inserted = queue_db.add_items(plan["entries"])
+    if inserted:
+        queue_db.add_log("ftp", "INFO", f"Restauración a la SD encolada desde {req.path}: {len(inserted)} archivo(s)")
+    started = worker_manager.start("ftp") if (req.start and inserted) else False
+    return {
+        "root": plan["root"],
+        "added": len(inserted),
+        "skipped": len(plan["entries"]) - len(inserted),
+        "bytes": sum(int(e["size_bytes"]) for e in plan["entries"]),
+        "started": started,
+    }
 
 
 @app.post("/api/ftp/backup/stop")

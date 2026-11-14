@@ -489,6 +489,7 @@
           <div class="card-header-row">
             <h2>💾 Backup de la microSD</h2>
             <div class="inline-group">
+              <button type="button" class="btn btn-sm" id="btnBackupSimulate" title="Recorre la SD sin descargar nada y muestra qué se copiaría">🔍 Simular</button>
               <button type="button" class="btn btn-sm btn-primary" id="btnBackupStart">▶ Hacer backup</button>
               <button type="button" class="btn btn-sm btn-danger hidden" id="btnBackupStop">⏹ Detener</button>
             </div>
@@ -499,6 +500,7 @@
             <div class="qs-row"><strong id="backupStatusText">—</strong> <span class="muted" id="backupStatusExtra"></span></div>
             <div class="progress-bar thin" role="progressbar" aria-label="Progreso del backup" aria-valuemin="0" aria-valuemax="100" id="backupProgBar"><div class="progress-fill ftp" id="backupProgFill"></div></div>
             <div class="muted backup-current" id="backupCurrent"></div>
+            <div class="backup-sim hidden" id="backupSim"></div>
           </div>
 
           <div class="form-grid">
@@ -529,6 +531,25 @@
             <span><strong>Backup incremental</strong>
               <span class="hint">Actualiza siempre la carpeta <code>switch-sd</code> y copia solo lo nuevo o cambiado. Desactivado: cada backup crea una carpeta nueva con la fecha (<code>switch-sd-AAAAMMDD-HHMMSS</code>).</span></span>
           </label>
+          <label class="chk-block chk-desc"><input type="checkbox" name="ftp_backup_compress" id="cfgBackupCompress">
+            <span><strong>Comprimir en .tar.gz</strong>
+              <span class="hint">Solo en los backups con fecha: al terminar se empaqueta la carpeta y se borra. Para restaurarlo se descomprime solo.</span></span>
+          </label>
+          <div class="form-grid">
+            <label>Conservar los últimos
+              <span class="input-unit">
+                <input type="number" min="0" max="999" name="ftp_backup_keep" id="cfgBackupKeep" aria-describedby="hintBackupKeep">
+                <span class="unit">backups</span>
+              </span>
+              <span class="hint" id="hintBackupKeep">0 = todos. Al terminar un backup correcto se borran los backups con fecha más antiguos (no toca <code>switch-sd</code>).</span>
+            </label>
+          </div>
+
+          <div class="card-header-row backup-list-head">
+            <h3 class="subhead">Backups guardados</h3>
+            <button type="button" class="btn btn-sm btn-ghost" id="btnBackupListRefresh">↻ Actualizar</button>
+          </div>
+          <ul class="backup-list" id="backupList" aria-label="Backups guardados"></ul>
         </div>
 
         <div class="card">

@@ -56,7 +56,8 @@ Uso:
       web papelera                  Lista la papelera (restaurar: toolbox mover --restaurar ID)
       web espacio                   Espacio libre en la SD de la Switch (si el FTP lo soporta)
       web buscar-switch             Escanea la LAN buscando Switch desde el servidor
-      web backup [iniciar|parar]    Estado, inicio o parada del backup de la microSD (sin juegos)
+      web backup [estado|iniciar|simular|parar|listar]
+                                    Backup de la microSD (sin juegos ni carpetas pesadas)
   toolbox estado                    Resumen combinado de CLI + Web
   toolbox readme                    Muestra el README completo en terminal
   toolbox -h | --help               Muestra esta ayuda
@@ -227,10 +228,21 @@ PY
         backup)
             local json
             case "${1:-}" in
+                simular | dry-run) json=$(_web_api POST "/api/ftp/backup/start" '{"simulate":true}') || { echo "No se pudo iniciar la simulación (¿web caída, cola FTP subiendo o sin carpeta de backups?)."; return 1; } ;;
+                listar | list)
+                    _web_api GET "/api/ftp/backup/list" | python3 -c "$(cat << 'PY'
+import json, sys
+d = json.load(sys.stdin)
+print(f"Backups en {d.get('path') or '(sin carpeta configurada)'}:")
+for b in d.get("items", []):
+    print(f"  {b['name']} | {b['size']} B | {b['kind']}")
+PY
+)" || { echo "Web no accesible en $WEB_BASE"; return 1; }
+                    return 0 ;;
                 iniciar | start) json=$(_web_api POST "/api/ftp/backup/start" "{}") || { echo "No se pudo iniciar el backup (¿web caída, cola FTP subiendo o sin carpeta de backups?)."; return 1; } ;;
                 parar | stop) json=$(_web_api POST "/api/ftp/backup/stop") || { echo "Web no accesible en $WEB_BASE"; return 1; } ;;
                 "" | estado) json=$(_web_api GET "/api/ftp/backup") || { echo "Web no accesible en $WEB_BASE"; return 1; } ;;
-                *) echo "Uso: toolbox web backup [estado|iniciar|parar]" >&2; return 1 ;;
+                *) echo "Uso: toolbox web backup [estado|iniciar|simular|parar|listar]" >&2; return 1 ;;
             esac
             printf '%s' "$json" | python3 -c "$(cat << 'PY'
 import json, sys
@@ -239,6 +251,13 @@ p = d.get("progress") if d.get("running") else None
 if p:
     print(f"Backup EN MARCHA ({p.get('phase')}) -> {p.get('target')}")
     print(f"  {p.get('files_done', 0)}/{p.get('files_total', 0)} fichero(s) | {p.get('bytes_done', 0)}/{p.get('bytes_total', 0)} B | {p.get('current', '')}")
+elif d.get("last") and d["last"].get("status") == "SIM":
+    l = d["last"]
+    print(f"Simulación: se copiarían {l.get('files_total', 0)} fichero(s), {l.get('bytes_total', 0)} B")
+    for g in l.get("top_dirs", []):
+        print(f"  + {g['path']}: {g['bytes']} B ({g['files']} fich.)")
+    for e in l.get("excluded_detail", []):
+        print(f"  - {e['path']}: {e['bytes']} B ({e['files']} fich.)")
 elif d.get("last"):
     l = d["last"]
     print(f"Último backup: {l.get('status')} | {l.get('files_done', 0)}/{l.get('files_total', 0)} fichero(s) | {l.get('bytes_done', 0)} B -> {l.get('target')}")
@@ -251,7 +270,7 @@ PY
             ;;
         *)
             echo "Subcomando web desconocido: $sub" >&2
-            echo "Opciones: estado | cola [mover|ftp] | iniciar <mover|ftp> | parar <mover|ftp> | logs [tipo] [N] | historial [tipo] [N] | papelera | espacio | buscar-switch | backup [estado|iniciar|parar]" >&2
+            echo "Opciones: estado | cola [mover|ftp] | iniciar <mover|ftp> | parar <mover|ftp> | logs [tipo] [N] | historial [tipo] [N] | papelera | espacio | buscar-switch | backup [estado|iniciar|simular|parar|listar]" >&2
             return 1
             ;;
     esac
